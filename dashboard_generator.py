@@ -1,5 +1,5 @@
 import pandas as pd, os, json
-
+ 
 df = pd.read_excel('/mnt/user-data/uploads/Raw_data_uplaod_file_upto_10th_June26.xlsx', sheet_name='AFS 26 Data', header=0)
 afs27 = df[df['AFS']=='AFS27'].copy()
 afs26 = df[df['AFS']=='AFS26'].copy()
@@ -21,13 +21,13 @@ SUB_PROVS={'Gauteng':[('GP','Gauteng core'),('FS','Free State'),('MP','Mpumalang
            'Eastern Cape':[('EC','EC core')],'International':[]}
 COUNTRY_MAP={'SZ':'Swaziland','BW':'Botswana','MZ':'Mozambique','ZW':'Zimbabwe','ZM':'Zambia',
              'NA':'Namibia','LS':'Lesotho','MU':'Mauritius','MW':'Malawi','GB':'Great Britain'}
-
+ 
 def pct_str(a,t): p=(a-t)/t*100 if t else 0; return f"({abs(p):.1f}%)" if p<0 else f"+{p:.1f}%"
 def delta_str(a,t): d=a-t; return f"(R{abs(d)/1e6:.2f}M)" if d<0 else f"+R{d/1e6:.2f}M"
 def col(a,t): return '#C00000' if a<t else '#375623'
 def fmtR(v): return f"R{v/1e6:.2f}M" if v>=1e6 else f"R{v/1000:.1f}K"
 def fmtN(v): return f"{v:,.0f}"
-
+ 
 def calc(region):
     r27=afs27[afs27['Region']==region]; r26y=afs26_ytd[afs26_ytd['Region']==region]
     r26j=afs26_jun[afs26_jun['Region']==region]
@@ -101,7 +101,7 @@ def calc(region):
     ytd_avg_price = float(r27_ytd2['Line Revenue'].sum()/ytd_qty2 if ytd_qty2 else 0)
     jun_avg_price = float(r27_jun2['Line Revenue'].sum()/jun_qty2 if jun_qty2 else 0)
     tot_avg_price = float(float(r27['Line Revenue'].sum())/float(r27['Line Inv Qty'].sum()) if r27['Line Inv Qty'].sum() else 0)
-
+ 
     # Units targets for period table
     ytd_units_act = int(r27_ytd2['Line Inv Qty'].sum())
     jun_units_act = int(r27_jun2['Line Inv Qty'].sum())
@@ -111,14 +111,14 @@ def calc(region):
     ytd_units_tgt = int(round(ytd_units_py * UPLIFT))
     jun_units_tgt = int(round(jun_units_py * UPLIFT * WD_PER))
     tot_units_tgt = ytd_units_tgt + jun_units_tgt
-
+ 
     # Monthly avg prices for chart secondary axis
     monthly_avg_prices = []
     for p1 in ['Mar','Apr','May','Jun']:
         md2 = r27[r27['Period1']==p1]
         q2 = md2['Line Inv Qty'].sum()
         monthly_avg_prices.append(float(round(md2['Line Revenue'].sum()/q2, 2)) if q2>0 else 0.0)
-
+ 
     return dict(region=region,total_rev=total_rev,total_units=total_units,avg_price=avg_price,
                 ytd_avg_price=ytd_avg_price,jun_avg_price=jun_avg_price,tot_avg_price=tot_avg_price,
                 ytd_units_act=ytd_units_act,ytd_units_tgt=ytd_units_tgt,
@@ -133,16 +133,16 @@ def calc(region):
                 sp_branch=sp_branch,sp26_b=sp26_b,sp_reg=sp_reg,sp26_r=sp26_r,
                 sub_data=sub_data,top_avg=top_avg,bot_avg=bot_avg,
                 cum_act=cum_act,cum_tgt=cum_tgt,cum_py=cum_py)
-
+ 
 REG_COLS={'Gauteng':'#185FA5','KZN':'#ED7D31','Western Cape':'#375623','Eastern Cape':'#843C0C','International':'#444444'}
 MONTH_LABELS={'Mar':'March','Apr':'April','May':'May','Jun':'June'}
-
+ 
 def build_html(d):
     r=d['region']; c=REG_COLS[r]; m=d['monthly']
     ytd_d=d['ytd_delta']; ytd_p=ytd_d/d['tgt_ytd']*100 if d['tgt_ytd'] else 0
     tgt_mtd=d['w1_tgt']+d['w2_tgt']; mtd_d=d['jun_act']-tgt_mtd
     total_d=d['total_rev']-d['tgt_ytd']-tgt_mtd
-
+ 
     # Avg prices + units for period table
     ytd_avg_price = d['ytd_avg_price']; jun_avg_price = d['jun_avg_price']; tot_avg_price = d['tot_avg_price']
     ytd_units_act = d['ytd_units_act']; ytd_units_tgt = d['ytd_units_tgt']
@@ -151,14 +151,14 @@ def build_html(d):
     ytd_units_d = ytd_units_act - ytd_units_tgt; jun_units_d = jun_units_act - jun_units_tgt
     tot_units_d = tot_units_act - tot_units_tgt
     chart_max_mtd = d['chart_max']
-
+ 
     # Monthly avg prices for charts
     avg_prices = d['monthly_avg_prices']
     # Determine sensible y2 axis range
     valid_avgs = [v for v in avg_prices if v > 0]
     y2_min = max(0, round(min(valid_avgs)/10)*10 - 10) if valid_avgs else 0
     y2_max = round(max(valid_avgs)/10)*10 + 20 if valid_avgs else 100
-
+ 
     # Monthly values for f-string injection
     mar_act=int(m['Mar']['act']); mar_tgt=int(m['Mar']['tgt'])
     apr_act=int(m['Apr']['act']); apr_tgt=int(m['Apr']['tgt'])
@@ -168,15 +168,15 @@ def build_html(d):
     w1_act=int(d['w1_act']);     w1_tgt=int(d['w1_tgt'])
     w2_act=int(d['w2_act']);     w2_tgt=int(d['w2_tgt'])
     total_rev=int(d['total_rev']); jun_mtd_tgt=int(d['w1_tgt']+d['w2_tgt'])
-
+ 
     # Remaining month targets from pre-computed dict (fast)
     def _rm(p1): return round(afs26[afs26['Region']==r][afs26['Period1']==p1]['Line Revenue'].sum()*1.19)
     jul_tgt=_rm('Jul'); aug_tgt=_rm('Aug'); sep_tgt=_rm('Sept')
     oct_tgt=_rm('Oct'); nov_tgt=_rm('Nov'); dec_tgt=_rm('Dec')
     jan_tgt=_rm('Jan'); feb_tgt=_rm('Feb')
-
+ 
     def row_color(a,t): return '#C00000' if a<t else '#375623'
-
+ 
     # Product class variables for matrix
     def pv(cls,k): return d['prod'].get(cls,{}).get(k,0)
     lpcto_rev=pv('LPCTO','rev'); lpcto_avg=pv('LPCTO','avg')
@@ -199,7 +199,7 @@ def build_html(d):
                f'<span style="text-align:right;color:{dc}">{"("+fmtN(abs(d_))+")" if d_<0 else "+"+fmtN(d_)}</span>'+\
                f'<span style="text-align:right;color:{dc}">{"("+str(abs(round(p_,1)))+"%" if p_<0 else "+"+str(round(p_,1))+"%"}</span>'+\
                f'{avg_cell}</div>'
-
+ 
     def sp_rows(sp_ser, sp26_ser, max_=8):
         mx=max(list(sp_ser.values())+[v for v in sp26_ser.values()]) if len(sp_ser) else 1
         rows=[]
@@ -224,7 +224,7 @@ def build_html(d):
   <span style="text-align:right">{ys}</span>
 </div>''')
         return ''.join(rows)
-
+ 
     def client_rows(top10, cp26, max_=10):
         maxR_=max(top10.values) if len(top10) else 1; rows=[]
         for i,(name,rev) in enumerate(list(top10.items())[:max_]):
@@ -241,7 +241,7 @@ def build_html(d):
   <span style="text-align:right">{ys}</span>
 </div>''')
         return ''.join(rows)
-
+ 
     def avg_rows(df_a, is_top, max_=8):
         if len(df_a)==0: return '<div style="padding:10px;color:#888;font-size:10px">Insufficient data</div>'
         mx=max(max(df_a['cy_avg']),max(df_a['py_avg'])); rows=[]
@@ -264,7 +264,7 @@ def build_html(d):
   <span style="text-align:right;font-weight:700;color:{chg_col}">{("+") if chg>=0 else ""}{chg:.2f}</span>
 </div>''')
         return ''.join(rows)
-
+ 
     # Sub-province / country section
     sub_html=''
     for s in d['sub_data']:
@@ -279,13 +279,13 @@ def build_html(d):
   <div style="font-size:10px;color:{gap_col};margin-bottom:5px">{gap_str}</div>
   <div style="height:4px;background:#ddd;border-radius:2px;margin-bottom:3px"><div style="width:{min(100,round(pct_))}%;height:4px;background:{prog_col};border-radius:2px"></div></div>
 </div>'''
-
+ 
     # Products horizontal bar JS data
     cls_list=['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP']
     prod_act=[d['prod'].get(k,{}).get('rev',0) for k in cls_list]
     prod_tgt=[d['prod'].get(k,{}).get('tgt',0) for k in cls_list]
     prod_max=max(max(prod_act),max(prod_tgt))*1.1
-
+ 
     items_rows=''.join([f'''<div style="display:grid;grid-template-columns:3fr 36px 62px 44px 34px;gap:3px;padding:4px 7px;border-bottom:1px solid #f0f0f0;font-size:8.5px;background:{"#fff" if i%2==0 else "#f9f9f9"}">
   <span style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{it["Item No (Stock)"]}</span>
   <span style="text-align:center"><span style="font-size:7.5px;padding:1px 2px;border-radius:8px;background:{GCOLORS.get(it["CLASS"].strip(),"#888")}22;color:{GCOLORS.get(it["CLASS"].strip(),"#555")};font-weight:700">{it["CLASS"].strip()}</span></span>
@@ -293,7 +293,7 @@ def build_html(d):
   <span style="text-align:right;color:#666">{it["avg"]:.2f}</span>
   <span style="text-align:right;color:#666">{it["pct"]:.2f}%</span>
 </div>''' for i,it in enumerate(d['top8'])])
-
+ 
     bot_rows=''.join([f'''<div style="display:grid;grid-template-columns:3fr 36px 62px 44px 34px;gap:3px;padding:4px 7px;border-bottom:1px solid #f0f0f0;font-size:8.5px;background:{"#fff" if i%2==0 else "#f9f9f9"}">
   <span style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{it["Item No (Stock)"]}</span>
   <span style="text-align:center"><span style="font-size:7.5px;padding:1px 2px;border-radius:8px;background:{GCOLORS.get(it["CLASS"].strip(),"#888")}22;color:{GCOLORS.get(it["CLASS"].strip(),"#555")};font-weight:700">{it["CLASS"].strip()}</span></span>
@@ -301,7 +301,7 @@ def build_html(d):
   <span style="text-align:right;color:#666">{it["avg"]:.2f}</span>
   <span style="text-align:right;color:#666">{it["pct"]:.2f}%</span>
 </div>''' for i,it in enumerate(d['bot8'])])
-
+ 
     top10_rows = client_rows(d['top10'], d['cp26'])
     new_cl_rows = ''.join([f'''<div style="display:grid;grid-template-columns:22px 1fr 70px 58px;gap:8px;align-items:center;padding:6px 12px;border-bottom:1px solid #f0f0f0;font-size:11px;background:{"#fff" if i%2==0 else "#f9f9f9"}">
   <span style="color:#888;font-size:10px">{i+1}</span>
@@ -309,7 +309,7 @@ def build_html(d):
   <span style="text-align:right;font-weight:700">{fmtR(row.rev)}</span>
   <span style="text-align:right;color:#666">{row.inv}</span>
 </div>''' for i,row in enumerate(d['new_cl'].rename(columns={'Cust Name':'Cust_Name'}).itertuples())])
-
+ 
     worst_rows = ''.join([f'''<div style="display:grid;grid-template-columns:22px 1fr 70px 70px 70px 62px;gap:8px;align-items:center;padding:6px 12px;border-bottom:1px solid #f0f0f0;font-size:11px;background:{"#fff" if i%2==0 else "#f9f9f9"}">
   <span style="color:#888;font-size:10px">{i+1}</span>
   <div><div style="font-weight:700">{row.Cust_Name}</div>{"" if row.rev>0 else "<span style=\"font-size:9px;background:#C0000022;color:#C00000;padding:1px 5px;border-radius:3px;display:inline-block;margin-top:2px\">Lost</span>"}</div>
@@ -318,24 +318,24 @@ def build_html(d):
   <span style="text-align:right;font-weight:700;color:#C00000">({fmtR(abs(row.drop))})</span>
   <span style="text-align:right;font-weight:700;color:#C00000">({abs(round(row.drop/row.py_rev*100,1))}%)</span>
 </div>''' for i,row in enumerate(d['worst_cl'].rename(columns={'Cust Name':'Cust_Name'}).itertuples())])
-
+ 
     sp_branch_rows = sp_rows(d['sp_branch'].to_dict(), d['sp26_b'].to_dict())
     sp_region_rows = sp_rows(d['sp_reg'].to_dict(), d['sp26_r'].to_dict())
     top_avg_rows   = avg_rows(d['top_avg'].rename(columns={'Cust Name': '_1','py_rev':'py_r'}), True)
     bot_avg_rows   = avg_rows(d['bot_avg'].rename(columns={'Cust Name': '_1','py_rev':'py_r'}), False)
-
+ 
     mar=m['Mar']; apr=m['Apr']; may_=m['May']; jun=m['Jun']
     ytd_act_d=d['ytd_act']-d['tgt_ytd']; ytd_pct_v=ytd_act_d/d['tgt_ytd']*100 if d['tgt_ytd'] else 0
     w1d=d['w1_act']-d['w1_tgt']; w2d=d['w2_act']-d['w2_tgt']
     mtd_act=d['jun_act']; mtd_tgt=d['w1_tgt']+d['w2_tgt']; mtd_d=mtd_act-mtd_tgt
     total_tgt=d['tgt_ytd']+mtd_tgt; total_d_=d['total_rev']-total_tgt
-
+ 
     def dc(v): return '#C00000' if v<0 else '#375623'
     def dfmt(v): return f"({fmtN(abs(v))})" if v<0 else f"+{fmtN(v)}"
     def dpct(v,t): p=v/t*100 if t else 0; return f"({abs(p):.2f}%)" if p<0 else f"+{p:.2f}%"
-
+ 
     sub_cols = f"grid-template-columns:repeat({min(len(d['sub_data']),5)},1fr)"
-
+ 
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -378,7 +378,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <div class="db">
 <div class="title-bar">HW24 {r.upper()} SALES — DASHBOARD</div>
 <div class="sub-bar"><span>9-Jun-26</span><span>March 2026 – June 2026 &nbsp;|&nbsp; MTD June W1+W2 &nbsp;|&nbsp; Targets = AFS26 ×1.19</span></div>
-
+ 
 <div class="kpi-row">
   <div class="kpi"><div class="kpi-label" style="background:#2E75B6">Total Turnover</div><div class="kpi-val" style="color:#1F3864">R{d['total_rev']:,.0f}</div></div>
   <div class="kpi"><div class="kpi-label" style="background:#ED7D31">Units Sold</div><div class="kpi-val" style="color:#ED7D31">{d['total_units']:,.0f}</div></div>
@@ -386,7 +386,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   <div class="kpi"><div class="kpi-label" style="background:#843C0C">Active Clients</div><div class="kpi-val" style="color:#843C0C">{d['clients']:,}</div></div>
   <div class="kpi"><div class="kpi-label" style="background:#595959">Invoices</div><div class="kpi-val" style="color:#595959">{d['invoices']:,}</div></div>
 </div>
-
+ 
 <!-- Product class matrix -->
 <div style="margin:10px 14px 0">
   <div style="display:grid;grid-template-columns:repeat(5,1fr);border:1px solid #e0e0e0">
@@ -402,8 +402,8 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
     <div style="flex:0 0 20%;border:1px solid #e0e0e0"><div style="background:#C00000;color:#fff;font-size:11px;font-weight:700;padding:6px 8px;text-align:center">OPP</div><div style="font-size:16px;font-weight:700;text-align:center;padding:8px 4px 2px;color:#C00000">{opp_rev:,.0f}</div><div style="font-size:11px;text-align:center;padding:0 4px 7px;color:#C00000">Avg R{opp_avg:.2f}</div></div>
   </div>
 </div>
-
-
+ 
+ 
 <!-- Monthly Mar-Feb table -->
 <div style="margin:10px 14px 0;overflow-x:auto">
   <table id="monthly-table" style="width:100%;border-collapse:collapse;font-size:10px">
@@ -428,7 +428,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
     <tbody id="monthly-table-body"></tbody>
   </table>
 </div>
-
+ 
 <div class="section-hdr" style="margin-top:14px">Period Performance</div>
 <div style="margin:0 14px">
 <div class="tbl-hdr" style="grid-template-columns:1.9fr 1.1fr 1.1fr 1fr .9fr 1fr"><span>Period</span><span style="text-align:right">Actual</span><span style="text-align:right">Target</span><span style="text-align:right">Delta</span><span style="text-align:right">% Delta</span><span style="text-align:right">Avg Unit Price</span></div>
@@ -445,9 +445,9 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 {tbl_row("MTD Units (June W1+W2)", jun_units_act, jun_units_tgt, indent=True)}
 {tbl_row("Total Units incl. June", tot_units_act, tot_units_tgt, total=True)}
 </div>
-
+ 
 <div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden" id="ins1-block"></div>
-
+ 
 <div class="chart-pair">
   <div class="chart-box">
     <div class="chart-title">CUMULATIVE ACTUAL vs PY (MAR–JUN)</div>
@@ -468,12 +468,12 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
     <div style="position:relative;height:190px"><canvas id="cYTD"></canvas></div>
   </div>
 </div>
-
+ 
 <div class="section-hdr" style="margin-top:14px">Sub-Region Breakdown — YTD (Mar–Jun)</div>
 <div style="display:grid;{sub_cols};gap:10px;margin:8px 14px 0">{sub_html}</div>
-
+ 
 <div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden" id="ins2-block"></div>
-
+ 
 <div class="section-hdr" style="margin-top:14px">National Performance by Region — MTD (June 2026 W1+W2) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">W1 = 5 days (100%) = R7,370,437 &nbsp;|&nbsp; W2 = 2 days (40%) = R2,948,175 &nbsp;|&nbsp; Daily = R1,403,893</span></div>
 <div class="mtd-split">
   <div class="loc-tbl-wrap" id="mtd-tbl-wrap">
@@ -491,7 +491,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
     <div id="mtd-canvas-wrap" style="position:relative;flex:1;min-height:160px"><canvas id="cMTD"></canvas></div>
   </div>
 </div>
-
+ 
 <div class="section-hdr" style="margin-top:14px">Top 10 Clients — {r}</div>
 <div style="margin:0 14px">
   <div style="display:grid;grid-template-columns:22px 1fr 70px 70px 60px;gap:8px;align-items:center;padding:6px 12px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0">
@@ -499,7 +499,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   </div>
   {top10_rows}
 </div>
-
+ 
 <div class="section-hdr" style="margin-top:14px">New Clients — {r} (no prior year)</div>
 <div style="margin:0 14px">
   <div style="display:grid;grid-template-columns:22px 1fr 70px 58px;gap:8px;align-items:center;padding:6px 12px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0">
@@ -507,7 +507,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   </div>
   {new_cl_rows if new_cl_rows else '<div style="padding:10px;color:#888;font-size:10px">No new clients</div>'}
 </div>
-
+ 
 <div class="section-hdr" style="margin-top:14px">Worst Performing Clients — {r}</div>
 <div style="margin:0 14px">
   <div style="display:grid;grid-template-columns:22px 1fr 70px 70px 70px 62px;gap:8px;align-items:center;padding:6px 12px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0">
@@ -515,9 +515,9 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   </div>
   {worst_rows}
 </div>
-
+ 
 <div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden" id="ins3-block"></div>
-
+ 
 <div class="section-hdr" style="margin-top:14px">Top Avg Price — {r} &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">PY rev &gt; R20K</span></div>
 <div style="margin:0 14px">
   <div style="display:grid;grid-template-columns:20px 1fr 70px 70px 62px 62px 56px;gap:5px;align-items:center;padding:6px 10px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0">
@@ -525,7 +525,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   </div>
   {top_avg_rows}
 </div>
-
+ 
 <div class="section-hdr" style="margin-top:14px">Bottom Avg Price — {r} &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">PY rev &gt; R20K</span></div>
 <div style="margin:0 14px">
   <div style="display:grid;grid-template-columns:20px 1fr 70px 70px 62px 62px 56px;gap:5px;align-items:center;padding:6px 10px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0">
@@ -533,7 +533,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   </div>
   {bot_avg_rows}
 </div>
-
+ 
 <div class="section-hdr" style="margin-top:14px">YTD Turnover by Product Group &amp; Top/Bottom 8 Items (excl. LPMTO)</div>
 <div style="display:grid;grid-template-columns:1fr 1.3fr 1.3fr;gap:8px;margin:8px 14px 0;align-items:stretch">
   <div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px;display:flex;flex-direction:column">
@@ -551,7 +551,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
     <div style="flex:1">{bot_rows}</div>
   </div>
 </div>
-
+ 
 <div class="section-hdr" style="margin-top:14px">Salespersons — Branch-Based ({r})</div>
 <div style="margin:0 14px">
   <div style="display:grid;grid-template-columns:24px 1fr 80px 70px 70px 60px;gap:6px;align-items:center;padding:6px 10px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0">
@@ -559,7 +559,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   </div>
   {sp_branch_rows if sp_branch_rows else '<div style="padding:10px;color:#888;font-size:10px">No branch-based salespersons for this region</div>'}
 </div>
-
+ 
 <div class="section-hdr" style="margin-top:14px">Salespersons — Sold to {r} Clients</div>
 <div style="margin:0 14px">
   <div style="display:grid;grid-template-columns:24px 1fr 80px 70px 70px 60px;gap:6px;align-items:center;padding:6px 10px;background:#843C0C;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0">
@@ -567,13 +567,13 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   </div>
   {sp_region_rows}
 </div>
-
+ 
 <div class="footer">HW24 {r} Sales Dashboard &bull; Confidential &bull; Generated 9 June 2026 &bull; Data: March–June 2026 (June W1+W2) &bull; Targets = AFS26 ×1.19</div>
 </div>
-
+ 
 <script>
 const gridC='rgba(128,128,128,0.1)', REG_COL='{c}', GREY='#888780';
-
+ 
 // ── Charts ────────────────────────────────────────────────────────────────────
 const avgPrices = {avg_prices};
 const y2Axis = {{
@@ -588,7 +588,7 @@ const avgDs = {{
   pointRadius:3,pointStyle:'circle',pointBackgroundColor:GREY,
   tension:.3,fill:false,yAxisID:'y2'
 }};
-
+ 
 new Chart(document.getElementById('cPY'),{{type:'line',
   data:{{labels:['March','April','May','June (W1+W2)'],datasets:[
     {{label:'Actual',data:{d['cum_act']},borderColor:REG_COL,borderWidth:2,borderDash:[],pointRadius:4,pointStyle:'circle',pointBackgroundColor:REG_COL,tension:.3,fill:false,yAxisID:'y'}},
@@ -602,7 +602,7 @@ new Chart(document.getElementById('cPY'),{{type:'line',
       y2:{{...y2Axis}}
     }}}}
 }});
-
+ 
 new Chart(document.getElementById('cYTD'),{{type:'line',
   data:{{labels:['March','April','May','June (W1+W2)'],datasets:[
     {{label:'Target',data:{d['cum_tgt']},borderColor:'#C00000',borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'rectRot',pointBackgroundColor:'#C00000',tension:.3,fill:false,yAxisID:'y'}},
@@ -616,7 +616,7 @@ new Chart(document.getElementById('cYTD'),{{type:'line',
       y2:{{...y2Axis}}
     }}}}
 }});
-
+ 
 // ── Product group horizontal bar ──────────────────────────────────────────────
 const vp={{id:'hv',afterDatasetsDraw(c){{const ctx=c.ctx;c.data.datasets.forEach((ds,di)=>{{c.getDatasetMeta(di).data.forEach((b,i)=>{{
   if(di===0){{const v=ds.data[i];ctx.save();ctx.font='700 9px Segoe UI,Arial';ctx.fillStyle='#333';
@@ -638,7 +638,7 @@ window.addEventListener('load',function(){{
       layout:{{padding:{{right:42,top:2,bottom:2,left:2}}}}}}
   }});
 }});
-
+ 
 // ── Monthly table ─────────────────────────────────────────────────────────────
 const monthActs  = {{Mar:{mar_act}, Apr:{apr_act}, May:{may_act}, Jun:{jun_act_v}, Jul:0,Aug:0,Sep:0,Oct:0,Nov:0,Dec:0,Jan:0,Feb:0}};
 const monthTgts  = {{Mar:{mar_tgt}, Apr:{apr_tgt}, May:{may_tgt}, Jun:{jun_full_tgt}, Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}}};
@@ -647,7 +647,7 @@ const totalAct   = mths_order.reduce((s,m)=>s+monthActs[m],0);
 // YTD target: only sum months where we have actual data (excludes future months)
 const totalTgt   = mths_order.reduce((s,m)=>s+(monthActs[m]>0?monthTgts[m]:0),0);
 const totalDelta = totalAct - totalTgt;
-
+ 
 const mbody = document.getElementById('monthly-table-body');
 [['Actual (R)','act'],['Target (R)','tgt'],['Delta (R)','delta']].forEach(([lbl,key])=>{{
   const tr=document.createElement('tr'); tr.style.borderBottom='1px solid #f0f0f0';
@@ -676,7 +676,7 @@ const mbody = document.getElementById('monthly-table-body');
     tdTot.innerHTML=`<span style="color:${{col}}">${{totalDelta<0?'('+fmt+')':fmt}}</span>`;}}
   tr.appendChild(tdTot); mbody.appendChild(tr);
 }});
-
+ 
 // ── Executive summary ─────────────────────────────────────────────────────────
 const ytdAct={ytd_act}, ytdTgt={tgt_ytd}, ytdDelta={ytd_delta};
 const ytdPct=Math.abs(ytdDelta/ytdTgt*100).toFixed(1);
@@ -686,7 +686,7 @@ const totalRev={total_rev};
 const negCol='#C00000', posCol='#375623';
 const ytdOk = ytdAct >= ytdTgt;
 const junOk = junAct >= junTgt;
-
+ 
 const insights = [
   {{
     num:1, col: ytdOk?posCol:negCol,
@@ -723,7 +723,7 @@ const insights = [
     stats:[{{label:`Annual Target R${{(totalTgt/1e6).toFixed(1)}}M`,neg:false}},{{label:`YTD+MTD R${{(totalRev/1e6).toFixed(1)}}M`,neg:false}},{{label:`Remaining R${{((totalTgt-totalRev)/1e6).toFixed(1)}}M`,neg:totalRev<totalTgt}}]
   }}
 ];
-
+ 
 function renderInsight(elId, ins) {{
   const el = document.getElementById(elId);
   if (!el) return;
@@ -742,7 +742,7 @@ function renderInsight(elId, ins) {{
 renderInsight('ins1-block', insights[0]);
 renderInsight('ins2-block', insights[1]);
 renderInsight('ins3-block', insights[2]);
-
+ 
 // ── National MTD by Region table + chart ─────────────────────────────────────
 const THIS_REGION = '{r}';
 const mtdRegions=[
@@ -755,7 +755,7 @@ const mtdRegions=[
 const tA=mtdRegions.reduce((s,r)=>s+r.act,0);
 const tT=mtdRegions.filter(r=>r.tgt>0).reduce((s,r)=>s+r.tgt,0);
 const tD=tA-tT, tPct=tT?tD/tT:null;
-
+ 
 document.getElementById('mtd-loc-tbl').innerHTML=mtdRegions.map((r,i)=>{{
   const isThisRegion = r.name === THIS_REGION;
   const d_=r.tgt?r.act-r.tgt:null, p_=r.tgt?d_/r.tgt:null;
@@ -781,7 +781,7 @@ document.getElementById('mtd-loc-tbl').innerHTML=mtdRegions.map((r,i)=>{{
   <span style="text-align:right;color:${{tD<0?'#C00000':'#375623'}}">${{tD<0?'(R'+(Math.abs(tD)/1e6).toFixed(2)+'M)':'+'+(tD/1e6).toFixed(2)+'M'}}</span>
   <span style="text-align:right;color:${{tD<0?'#C00000':'#375623'}}">${{tPct!==null?(tD<0?'('+Math.abs(Math.round(tPct*100))+'%)':'+'+Math.round(tPct*100)+'%'):'—'}}</span>
 </div>`;
-
+ 
 window.addEventListener('load',function(){{
   const tw=document.getElementById('mtd-tbl-wrap'),cw=document.getElementById('mtd-chart-wrap');
   const cvw=document.getElementById('mtd-canvas-wrap');
@@ -809,23 +809,24 @@ window.addEventListener('load',function(){{
 </body>
 </html>"""
     return html
-
+ 
 regions_cfg = [
     ('Gauteng','#185FA5'),('KZN','#ED7D31'),('Western Cape','#375623'),
     ('Eastern Cape','#843C0C'),('International','#444444'),
 ]
-
-output_dir = '/mnt/user-data/outputs'
-files_created = []
-for region, col in regions_cfg:
-    d = calc(region)
-    d['col'] = col
-    html = build_html(d)
-    safe_name = region.replace(' ','_')
-    path = f"{output_dir}/HW24_{safe_name}_Dashboard.html"
-    with open(path,'w',encoding='utf-8') as f:
-        f.write(html)
-    files_created.append(path)
-    print(f"✓ {region}: {len(html):,} bytes → {path}")
-
-print(f"\nAll {len(files_created)} regional dashboards created.")
+ 
+if __name__ == '__main__':
+    output_dir = '/mnt/user-data/outputs'
+    import os; os.makedirs(output_dir, exist_ok=True)
+    files_created = []
+    for region, col in regions_cfg:
+        d = calc(region)
+        d['col'] = col
+        html = build_html(d)
+        safe_name = region.replace(' ','_')
+        path = f"{output_dir}/HW24_{safe_name}_Dashboard.html"
+        with open(path,'w',encoding='utf-8') as f:
+            f.write(html)
+        files_created.append(path)
+        print(f"✓ {region}: {len(html):,} bytes → {path}")
+    print(f"\nAll {len(files_created)} regional dashboards created.")
