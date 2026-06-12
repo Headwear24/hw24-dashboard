@@ -1084,7 +1084,7 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
             chg=row.cy_avg-row.py_avg; cy_col='#375623' if is_top else '#C00000'; chg_col='#375623' if chg>=0 else '#C00000'
             bg='#fff' if i%2==0 else '#f9f9f9'
             py_w=round(row.py_avg/mx*100); cy_w=round(row.cy_avg/mx*100)
-            cn = getattr(row, 'Cust Name', getattr(row, '_1', '?'))
+            cn = getattr(row, '_1', getattr(row, 'Cust Name', '?'))
             rows.append(f'''<div style="display:grid;grid-template-columns:20px 1fr 110px 78px 78px 62px 62px 62px;gap:6px;align-items:center;padding:6px 10px;border-bottom:1px solid #f0f0f0;font-size:10px;background:{bg}">
       <span style="color:#888">{i+1}</span>
       <div><div style="font-weight:700;font-size:10px">{cn}</div>
@@ -1098,7 +1098,7 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
       <span style="text-align:right">R{row.cy_rev:.0f}</span>
       <span style="text-align:right;color:#888">R{row.py_avg:.2f}</span>
       <span style="text-align:right;font-weight:700;color:{cy_col}">R{row.cy_avg:.2f}</span>
-      <span style="text-align:right;font-weight:700;color:{chg_col}">{"+":if chg>=0 else ""}{chg:.2f}</span>
+      <span style="text-align:right;font-weight:700;color:{chg_col}">{"+" if chg>=0 else ""}{chg:.2f}</span>
     </div>''')
         return ''.join(rows)
  
@@ -1218,6 +1218,15 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
       <span style="text-align:right;font-weight:700;color:#C00000">({fmtK(abs(r["drop"]))})</span>
       <span style="text-align:right;font-weight:700;color:#C00000">({abs(round(r["drop"]/r["py_rev"]*100,1))}%)</span>
     </div>''' for i,(_,r) in enumerate(worst.iterrows())])
+ 
+    # ── Pre-compute renamed dataframes (can't use dict literals in f-string) ────
+    top_avg_r  = top_avg.rename(columns={"Cust Name":"_1"})
+    bot_avg_r  = bot_avg.rename(columns={"Cust Name":"_1"})
+    # Add prov column if missing
+    if 'prov' not in top_avg_r.columns and 'prov' in top_avg.columns:
+        top_avg_r['prov'] = top_avg['prov'].values
+    if 'prov' not in bot_avg_r.columns and 'prov' in bot_avg.columns:
+        bot_avg_r['prov'] = bot_avg['prov'].values
  
     # ── Assemble HTML ──────────────────────────────────────────────────────────
     html = f"""<!DOCTYPE html>
@@ -1369,12 +1378,12 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <div class="section-hdr" style="margin-top:14px">Top 10 — Highest Avg Price/Unit &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">PY rev &gt; R50K</span></div>
 <div style="margin:0 14px">
   <div style="display:grid;grid-template-columns:20px 1fr 110px 78px 78px 62px 62px 62px;gap:6px;align-items:center;padding:6px 10px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0"><span>#</span><span>Client</span><span>Province</span><span style="text-align:right">PY Revenue</span><span style="text-align:right">CY Revenue</span><span style="text-align:right">PY Avg</span><span style="text-align:right">CY Avg</span><span style="text-align:right">Change</span></div>
-  {avg_rows(top_avg.rename(columns={{"Cust Name":"_1"}}), True)}
+  {avg_rows(top_avg_r, True)}
 </div>
 <div class="section-hdr" style="margin-top:14px">Bottom 10 — Lowest Avg Price/Unit &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">PY rev &gt; R50K</span></div>
 <div style="margin:0 14px">
   <div style="display:grid;grid-template-columns:20px 1fr 110px 78px 78px 62px 62px 62px;gap:6px;align-items:center;padding:6px 10px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0"><span>#</span><span>Client</span><span>Province</span><span style="text-align:right">PY Revenue</span><span style="text-align:right">CY Revenue</span><span style="text-align:right">PY Avg</span><span style="text-align:right">CY Avg</span><span style="text-align:right">Change</span></div>
-  {avg_rows(bot_avg.rename(columns={{"Cust Name":"_1"}}), False)}
+  {avg_rows(bot_avg_r, False)}
 </div>
  
 <!-- Product group -->
