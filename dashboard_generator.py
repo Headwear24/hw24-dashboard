@@ -148,7 +148,10 @@ def calc(region):
 REG_COLS={'Gauteng':'#185FA5','KZN':'#ED7D31','Western Cape':'#375623','Eastern Cape':'#843C0C','International':'#444444'}
 MONTH_LABELS={'Mar':'March','Apr':'April','May':'May','Jun':'June'}
  
-def build_html(d):
+def build_html(d, report_date=None):
+    import datetime
+    if report_date is None:
+        report_date = datetime.date.today().strftime('%-d %b %Y')
     r=d['region']; c=REG_COLS[r]; m=d['monthly']
     ytd_d=d['ytd_delta']; ytd_p=ytd_d/d['tgt_ytd']*100 if d['tgt_ytd'] else 0
     tgt_mtd=d['w1_tgt']+d['w2_tgt']; mtd_d=d['jun_act']-tgt_mtd
@@ -352,7 +355,7 @@ def build_html(d):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HW24 {r} Sales Dashboard — 9 June 2026</title>
+<title>HW24 {r} Sales Dashboard — {report_date}</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
@@ -388,7 +391,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <body>
 <div class="db">
 <div class="title-bar">HW24 {r.upper()} SALES — DASHBOARD</div>
-<div class="sub-bar"><span>9-Jun-26</span><span>March 2026 – June 2026 &nbsp;|&nbsp; MTD June W1+W2 &nbsp;|&nbsp; Targets = AFS26 ×1.19</span></div>
+<div class="sub-bar"><span>{report_date}</span><span>March 2026 – June 2026 &nbsp;|&nbsp; MTD June W1+W2 &nbsp;|&nbsp; Targets = AFS26 ×1.19</span></div>
  
 <div class="kpi-row">
   <div class="kpi"><div class="kpi-label" style="background:#2E75B6">Total Turnover</div><div class="kpi-val" style="color:#1F3864">R{d['total_rev']:,.0f}</div></div>
@@ -579,7 +582,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   {sp_region_rows}
 </div>
  
-<div class="footer">HW24 {r} Sales Dashboard &bull; Confidential &bull; Generated 9 June 2026 &bull; Data: March–June 2026 (June W1+W2) &bull; Targets = AFS26 ×1.19</div>
+<div class="footer">HW24 {r} Sales Dashboard &bull; Confidential &bull; Generated {report_date} &bull; Data: March–June 2026 (June W1+W2) &bull; Targets = AFS26 ×1.19</div>
 </div>
  
 <script>
@@ -1222,11 +1225,34 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
     # ── Pre-compute renamed dataframes (can't use dict literals in f-string) ────
     top_avg_r  = top_avg.rename(columns={"Cust Name":"_1"})
     bot_avg_r  = bot_avg.rename(columns={"Cust Name":"_1"})
-    # Add prov column if missing
     if 'prov' not in top_avg_r.columns and 'prov' in top_avg.columns:
         top_avg_r['prov'] = top_avg['prov'].values
     if 'prov' not in bot_avg_r.columns and 'prov' in bot_avg.columns:
         bot_avg_r['prov'] = bot_avg['prov'].values
+ 
+    # ── Pre-compute all JS data strings (avoids f-string brace confusion) ────
+    _avgs    = [round(mar_avg,2), round(apr_avg,2), round(may_avg,2), round(jun_avg,2)]
+    _valid_a = [v for v in _avgs if v>0]
+    _y2_min  = max(0, round(min(_valid_a)/10)*10 - 10) if _valid_a else 0
+    _y2_max  = round(max(_valid_a)/10)*10 + 20         if _valid_a else 100
+ 
+    _cum_act = str(cum_act)
+    _cum_tgt = str(cum_tgt)
+    _cum_py  = str(cum_py)
+    _avgs_js = str(_avgs)
+ 
+    _prod_act_js = str([round(float(prod.get(k,{}).get('rev',0))) for k in ['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP']])
+    _prod_tgt_js = str([round(float(prod.get(k,{}).get('tgt',0))) for k in ['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP']])
+ 
+    _w1_act = int(w1_act); _w2_act = int(w2_act)
+    _w1_tgt = int(w1_tgt); _w2_tgt = int(w2_tgt)
+    _mtd_max = max(_w1_act, _w1_tgt, _w2_act, _w2_tgt, 1)
+ 
+    # JS object literals for monthly table — pre-built as plain strings
+    _mth_acts = "{" + f"Mar:{int(mar_act)},Apr:{int(apr_act)},May:{int(may_act)},Jun:{int(jun_act)},Jul:0,Aug:0,Sep:0,Oct:0,Nov:0,Dec:0,Jan:0,Feb:0" + "}"
+    _mth_tgts = "{" + f"Mar:{mar_tgt},Apr:{apr_tgt},May:{may_tgt},Jun:{jun_tgt_full},Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}" + "}"
+ 
+    _daily = round(jun_tgt_full/20)
  
     # ── Assemble HTML ──────────────────────────────────────────────────────────
     html = f"""<!DOCTYPE html>
@@ -1427,43 +1453,40 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
  
 <script>
 const gridC='rgba(128,128,128,0.1)', GREY='#888780', AC='#1D9E75';
-const avgs=[{mar_avg:.2f},{apr_avg:.2f},{may_avg:.2f},{jun_avg:.2f}];
+const avgs={_avgs_js};
 const avgDs={{label:'Avg Price',data:avgs,type:'line',borderColor:GREY,borderWidth:1.5,borderDash:[2,3],pointRadius:3,fill:false,yAxisID:'y2'}};
-const y2={{position:'right',min:{round(min(mar_avg,apr_avg,may_avg,jun_avg)/10)*10-10},max:{round(max(mar_avg,apr_avg,may_avg,jun_avg)/10)*10+20},ticks:{{font:{{size:9}},color:GREY,callback:v=>'R'+v.toFixed(0)}},grid:{{display:false}},title:{{display:true,text:'Avg Price (R)',font:{{size:9}},color:GREY}}}};
+const y2={{position:'right',min:{_y2_min},max:{_y2_max},ticks:{{font:{{size:9}},color:GREY,callback:v=>'R'+v.toFixed(0)}},grid:{{display:false}},title:{{display:true,text:'Avg Price (R)',font:{{size:9}},color:GREY}}}};
  
 new Chart(document.getElementById('cPY'),{{type:'line',data:{{labels:['March','April','May','June (MTD)'],datasets:[
-  {{label:'Actual',data:{cum_act},borderColor:AC,borderWidth:2,pointRadius:4,pointStyle:'circle',pointBackgroundColor:AC,tension:.3,fill:false,yAxisID:'y'}},
-  {{label:'PY',data:{cum_py},borderColor:GREY,borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'triangle',pointBackgroundColor:GREY,tension:.3,fill:false,yAxisID:'y'}},
+  {{label:'Actual',data:{_cum_act},borderColor:AC,borderWidth:2,pointRadius:4,pointStyle:'circle',pointBackgroundColor:AC,tension:.3,fill:false,yAxisID:'y'}},
+  {{label:'PY',data:{_cum_py},borderColor:GREY,borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'triangle',pointBackgroundColor:GREY,tension:.3,fill:false,yAxisID:'y'}},
   {{...avgDs}}
-]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:9}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(1)+'M'}},grid:{{color:gridC}}}},y2}}}}}});
+]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:9}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(1)+'M'}},grid:{{color:gridC}}}},y2}}}}}}}});
  
 new Chart(document.getElementById('cYTD'),{{type:'line',data:{{labels:['March','April','May','June (MTD)'],datasets:[
-  {{label:'Target',data:{cum_tgt},borderColor:'#C00000',borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'rectRot',pointBackgroundColor:'#C00000',tension:.3,fill:false,yAxisID:'y'}},
-  {{label:'Actual',data:{cum_act},borderColor:AC,borderWidth:2,pointRadius:4,pointStyle:'circle',pointBackgroundColor:AC,tension:.3,fill:false,yAxisID:'y'}},
+  {{label:'Target',data:{_cum_tgt},borderColor:'#C00000',borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'rectRot',pointBackgroundColor:'#C00000',tension:.3,fill:false,yAxisID:'y'}},
+  {{label:'Actual',data:{_cum_act},borderColor:AC,borderWidth:2,pointRadius:4,pointStyle:'circle',pointBackgroundColor:AC,tension:.3,fill:false,yAxisID:'y'}},
   {{...avgDs}}
-]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:9}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(1)+'M'}},grid:{{color:gridC}}}},y2}}}}}});
+]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:9}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(1)+'M'}},grid:{{color:gridC}}}},y2}}}}}}}});
  
-// MTD chart
 new Chart(document.getElementById('cMTD'),{{type:'bar',data:{{labels:['Week 1','Week 2'],datasets:[
-  {{label:'Actual',data:[{int(w1_act)},{int(w2_act)}],backgroundColor:'#22A548',barPercentage:1.0,categoryPercentage:0.85}},
-  {{label:'Target',data:[{w1_tgt},{w2_tgt}],backgroundColor:'#8B0000',barPercentage:1.0,categoryPercentage:0.85}}
-]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:11}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(2)+'M'}},grid:{{color:'rgba(180,180,180,0.25)'}}}}}}}}}});
+  {{label:'Actual',data:[{_w1_act},{_w2_act}],backgroundColor:'#22A548',barPercentage:1.0,categoryPercentage:0.85}},
+  {{label:'Target',data:[{_w1_tgt},{_w2_tgt}],backgroundColor:'#8B0000',barPercentage:1.0,categoryPercentage:0.85}}
+]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{label:ctx=>'R'+Math.round(ctx.raw).toLocaleString()}}}}}},scales:{{x:{{ticks:{{font:{{size:11}}}},grid:{{display:false}}}},y:{{min:0,ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(2)+'M'}},grid:{{color:'rgba(180,180,180,0.25)'}}}}}}}}}}}});
  
-// Product group chart
 const vp={{id:'hv',afterDatasetsDraw(c){{const ctx=c.ctx;c.getDatasetMeta(0).data.forEach((b,i)=>{{const v=c.data.datasets[0].data[i];ctx.save();ctx.font='700 8px Segoe UI';ctx.fillStyle='#333';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('R'+(v/1e6).toFixed(1)+'M',b.x+4,b.y);ctx.restore();}});}}}};
 new Chart(document.getElementById('cHBar'),{{type:'bar',plugins:[vp],data:{{
   labels:['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP'],
   datasets:[
-    {{label:'Actual',data:{[round(v) for v in prod_act_js]},backgroundColor:'#2E75B6',barPercentage:.45,categoryPercentage:.85}},
-    {{label:'Target (PY+19%)',data:{[round(v) for v in prod_tgt_js]},backgroundColor:'rgba(200,200,200,0.55)',borderColor:'#999',borderWidth:1,barPercentage:.45,categoryPercentage:.85}}
+    {{label:'Actual',data:{_prod_act_js},backgroundColor:'#2E75B6',barPercentage:.45,categoryPercentage:.85}},
+    {{label:'Target (PY+19%)',data:{_prod_tgt_js},backgroundColor:'rgba(200,200,200,0.55)',borderColor:'#999',borderWidth:1,barPercentage:.45,categoryPercentage:.85}}
   ]
 }},options:{{indexAxis:'y',responsive:true,maintainAspectRatio:false,
   plugins:{{legend:{{display:true,position:'bottom',labels:{{font:{{size:9}},boxWidth:10}}}}}},
-  scales:{{x:{{min:0,ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(0)+'M'}},grid:{{color:'rgba(180,180,180,0.2)'}}}},y:{{ticks:{{font:{{size:10,weight:'700'}},color:'#333'}},grid:{{display:false}}}}}},layout:{{padding:{{right:42}}}}}}}});
+  scales:{{x:{{min:0,ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(0)+'M'}},grid:{{color:'rgba(180,180,180,0.2)'}}}},y:{{ticks:{{font:{{size:10,weight:'700'}},color:'#333'}},grid:{{display:false}}}}}},layout:{{padding:{{right:42}}}}}}}}}});
  
-// Monthly table
-const mActs={{{{mth_acts}}}};
-const mTgts={{{{mth_tgts}}}};
+const mActs={_mth_acts};
+const mTgts={_mth_tgts};
 const mths=['Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb'];
 const tAct=mths.reduce((s,m)=>s+mActs[m],0);
 const tTgt=mths.reduce((s,m)=>s+(mActs[m]>0?mTgts[m]:0),0);
