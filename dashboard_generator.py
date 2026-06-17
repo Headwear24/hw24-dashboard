@@ -3,11 +3,13 @@ import pandas as pd, os, json
 # Global state — set by initialise()
 df = afs27 = afs26 = None
 UPLIFT=1.19; WD_PER=9/20; prov_col='Province Orginal'; sp_col='Sales Person Use'
+WEEKS_PRESENT=['Week 1','Week 2']; WEEK_DAYS={}; CUR_WEEK_LABEL='Week 2'; CUR_WEEK_DAYS=4; CUR_MONTH='Jun'
  
 def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     """Load data file and set global config. Call before calc()."""
     global df, afs27, afs26, UPLIFT, WD_PER, afs26_ytd, afs26_jun
     global sp_lu, branch_dict
+    global WEEKS_PRESENT, WEEK_DAYS, CUR_WEEK_LABEL, CUR_WEEK_DAYS, CUR_MONTH
     WD_PER = wd_per
     df = pd.read_excel(filepath, sheet_name='AFS 26 Data', header=0)
     afs27 = df[df['AFS']=='AFS27'].copy()
@@ -20,6 +22,21 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     sp_lu.columns = ['sp','branch']
     sp_lu['branch'] = sp_lu['branch'].str.strip()
     branch_dict.update(dict(zip(sp_lu['sp'], sp_lu['branch'])))
+    # --- Derive the current month and the weeks present in its data ---
+    cur = afs27[afs27['Period1']==CUR_MONTH].copy()
+    cur['_dt'] = pd.to_datetime(afs27.loc[cur.index, 'Inv Dt'], errors='coerce')
+    def wk_sort(w):
+        try: return int(str(w).split()[1])
+        except: return 99
+    present = sorted([w for w in cur['Week'].dropna().unique()], key=wk_sort)
+    WEEKS_PRESENT = present if present else ['Week 1']
+    # Calendar days of data present per week (distinct invoice dates in that week)
+    WEEK_DAYS = {}
+    for w in WEEKS_PRESENT:
+        days = cur[cur['Week']==w]['_dt'].dt.normalize().dropna().nunique()
+        WEEK_DAYS[w] = int(days) if days else 5
+    CUR_WEEK_LABEL = WEEKS_PRESENT[-1]
+    CUR_WEEK_DAYS = WEEK_DAYS.get(CUR_WEEK_LABEL, 5)
 REGION_MAP={'GP':'Gauteng','LP':'Gauteng','NW':'Gauteng','MP':'Gauteng','FS':'Gauteng',
             'KZN':'KZN','ZN':'KZN','WC':'Western Cape','NC':'Western Cape',
             'EC':'Eastern Cape','ZZZ':'International'}
@@ -53,6 +70,16 @@ def calc(region):
     ytd_act=r27y['Line Revenue'].sum(); jun_act=r27j['Line Revenue'].sum()
     w1_act=int(r27[(r27['Period1']=='Jun')&(r27['Week']=='Week 1')]['Line Revenue'].sum())
     w2_act=int(r27[(r27['Period1']=='Jun')&(r27['Week']=='Week 2')]['Line Revenue'].sum())
+    # --- Dynamic weeks: detect every week present in June data and build per-week act/tgt ---
+    # Uses the global WEEKS_PRESENT / WEEK_DAYS computed from the data in initialise().
+    weeks=[]
+    for wlabel in WEEKS_PRESENT:
+        wact=int(r27[(r27['Period1']=='Jun')&(r27['Week']==wlabel)]['Line Revenue'].sum())
+        ndays=WEEK_DAYS.get(wlabel,5)
+        # weekly target prorated by working days actually elapsed in that week (out of 5)
+        wtgt=round(weekly_tgt * (min(ndays,5)/5))
+        weeks.append({'label':wlabel,'act':wact,'tgt':wtgt,'days':ndays,'partial':ndays<5})
+    week_max=max([w['act'] for w in weeks]+[round(py_jun*UPLIFT/4)]) if weeks else 1
     chart_max=int(max(w1_act, round(py_jun*UPLIFT/4), w2_act, round(py_jun*UPLIFT/4*2/5)) * 1.2) if py_jun>0 else max(w1_act,w2_act,1000)*2
     monthly={}
     for p1 in ['Mar','Apr','May','Jun']:
@@ -139,6 +166,7 @@ def calc(region):
                 clients=clients,invoices=invoices,ytd_act=ytd_act,tgt_ytd=tgt_ytd,
                 ytd_delta=ytd_act-tgt_ytd,tgt_jun_pro=tgt_jun_pro,tgt_jun_full=tgt_jun_full,
                 weekly_tgt=weekly_tgt,w1_act=w1_act,w1_tgt=w1_tgt,w2_act=w2_act,w2_tgt=w2_tgt,
+                weeks=weeks,
                 jun_act=jun_act,total_tgt_mtd=tgt_ytd+tgt_jun_pro,monthly=monthly,prod=prod,
                 top8=top8,bot8=bot8,top10=top10,cp26=cp26,new_cl=new_cl,worst_cl=worst_cl,
                 sp_branch=sp_branch,sp26_b=sp26_b,sp_reg=sp_reg,sp26_r=sp26_r,
@@ -861,8 +889,12 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
     r26_ytd = r26[r26['Period1'].isin(['Mar','Apr','May'])]
     r26_jun = r26[r26['Period1']=='Jun']
  
+    # ── Override manual params with DATA-DERIVED week info (fully data-driven) ──
+    week_label   = CUR_WEEK_LABEL          # e.g. 'Week 3'
+    days_elapsed = CUR_WEEK_DAYS           # calendar days of data in the current week
+    n_weeks_full = len(WEEKS_PRESENT) - 1  # completed weeks before the current partial one
     w2_frac = days_elapsed / 5
-    wd_el   = (int(week_label.split()[1]) - 1) * 5 + days_elapsed
+    wd_el   = n_weeks_full * 5 + days_elapsed
     wd_tot  = 20
     pro_rat = wd_el / wd_tot
  
@@ -896,6 +928,17 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
  
     w1_act=float(r27_jun[r27_jun['Week']=='Week 1']['Line Revenue'].sum())
     w2_act=float(r27_jun[r27_jun['Week']=='Week 2']['Line Revenue'].sum())
+ 
+    # --- Dynamic weeks for June (data-driven) ---
+    nat_weeks=[]
+    for wlabel in WEEKS_PRESENT:
+        wact=float(r27_jun[r27_jun['Week']==wlabel]['Line Revenue'].sum())
+        ndays=WEEK_DAYS.get(wlabel,5)
+        wtgt=round(weekly_tgt*(min(ndays,5)/5))
+        nat_weeks.append({'label':wlabel,'act':int(wact),'tgt':int(wtgt),'days':ndays,'partial':ndays<5})
+    # MTD prorated target = sum of per-week targets actually elapsed
+    jun_tgt_pro=sum(w['tgt'] for w in nat_weeks)
+    mtd_week_span=" + ".join("W"+w['label'].split()[1] for w in nat_weeks)
  
     # Remaining monthly targets
     def rm(p): return round(mrev(r26,p)*UPLIFT)
@@ -1246,7 +1289,16 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
  
     _w1_act = int(w1_act); _w2_act = int(w2_act)
     _w1_tgt = int(w1_tgt); _w2_tgt = int(w2_tgt)
-    _mtd_max = max(_w1_act, _w1_tgt, _w2_act, _w2_tgt, 1)
+    _mtd_max = max([w['act'] for w in nat_weeks]+[w['tgt'] for w in nat_weeks]+[1])
+    # Dynamic period-table week rows (label shows day count when partial)
+    nat_week_rows = "\n".join(
+        tbl_row(f"{w['label']} ({w['days']} days)" if w['partial'] else w['label'],
+                w['act'], w['tgt'], indent=True)
+        for w in nat_weeks)
+    # JS arrays for the MTD chart (one entry per week present)
+    _wk_labels_js = str([ (f"{w['label']} ({w['days']}d)" if w['partial'] else w['label']) for w in nat_weeks ])
+    _wk_act_js    = str([w['act'] for w in nat_weeks])
+    _wk_tgt_js    = str([w['tgt'] for w in nat_weeks])
  
     # JS object literals for monthly table — pre-built as plain strings
     _mth_acts = "{" + f"Mar:{int(mar_act)},Apr:{int(apr_act)},May:{int(may_act)},Jun:{int(jun_act)},Jul:0,Aug:0,Sep:0,Oct:0,Nov:0,Dec:0,Jan:0,Feb:0" + "}"
@@ -1333,9 +1385,8 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 {tbl_row("March",   int(mar_act), mar_tgt, mar_avg, indent=True)}
 {tbl_row("April",   int(apr_act), apr_tgt, apr_avg, indent=True)}
 {tbl_row("May",     int(may_act), may_tgt, may_avg, indent=True)}
-{tbl_row("MTD June (W1+W2)", int(jun_act), jun_tgt_pro, jun_avg, bold=True)}
-{tbl_row("Week 1",  int(w1_act), w1_tgt, indent=True)}
-{tbl_row("Week 2",  int(w2_act), w2_tgt, indent=True)}
+{tbl_row(f"MTD June ({mtd_week_span})", int(jun_act), jun_tgt_pro, jun_avg, bold=True)}
+{nat_week_rows}
 {tbl_row("Total incl. June MTD", int(total_rev), ytd_tgt+jun_tgt_pro, avg_price, total=True)}
 {tbl_row("YTD Units (Mar–May)", ytd_u_act, ytd_u_tgt, bold=True)}
 {tbl_row("MTD Units (June)", jun_u_act, jun_u_tgt, indent=True)}
@@ -1461,18 +1512,18 @@ new Chart(document.getElementById('cPY'),{{type:'line',data:{{labels:['March','A
   {{label:'Actual',data:{_cum_act},borderColor:AC,borderWidth:2,pointRadius:4,pointStyle:'circle',pointBackgroundColor:AC,tension:.3,fill:false,yAxisID:'y'}},
   {{label:'PY',data:{_cum_py},borderColor:GREY,borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'triangle',pointBackgroundColor:GREY,tension:.3,fill:false,yAxisID:'y'}},
   {{...avgDs}}
-]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:9}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(1)+'M'}},grid:{{color:gridC}}}},y2}}}}}}}});
+]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:9}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(1)+'M'}},grid:{{color:gridC}}}},y2}}}}}});
  
 new Chart(document.getElementById('cYTD'),{{type:'line',data:{{labels:['March','April','May','June (MTD)'],datasets:[
   {{label:'Target',data:{_cum_tgt},borderColor:'#C00000',borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'rectRot',pointBackgroundColor:'#C00000',tension:.3,fill:false,yAxisID:'y'}},
   {{label:'Actual',data:{_cum_act},borderColor:AC,borderWidth:2,pointRadius:4,pointStyle:'circle',pointBackgroundColor:AC,tension:.3,fill:false,yAxisID:'y'}},
   {{...avgDs}}
-]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:9}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(1)+'M'}},grid:{{color:gridC}}}},y2}}}}}}}});
+]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:9}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(1)+'M'}},grid:{{color:gridC}}}},y2}}}}}});
  
-new Chart(document.getElementById('cMTD'),{{type:'bar',data:{{labels:['Week 1','Week 2'],datasets:[
-  {{label:'Actual',data:[{_w1_act},{_w2_act}],backgroundColor:'#22A548',barPercentage:1.0,categoryPercentage:0.85}},
-  {{label:'Target',data:[{_w1_tgt},{_w2_tgt}],backgroundColor:'#8B0000',barPercentage:1.0,categoryPercentage:0.85}}
-]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{label:ctx=>'R'+Math.round(ctx.raw).toLocaleString()}}}}}},scales:{{x:{{ticks:{{font:{{size:11}}}},grid:{{display:false}}}},y:{{min:0,ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(2)+'M'}},grid:{{color:'rgba(180,180,180,0.25)'}}}}}}}}}}}});
+new Chart(document.getElementById('cMTD'),{{type:'bar',data:{{labels:{_wk_labels_js},datasets:[
+  {{label:'Actual',data:{_wk_act_js},backgroundColor:'#22A548',barPercentage:1.0,categoryPercentage:0.85}},
+  {{label:'Target',data:{_wk_tgt_js},backgroundColor:'#8B0000',barPercentage:1.0,categoryPercentage:0.85}}
+]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{label:ctx=>'R'+Math.round(ctx.raw).toLocaleString()}}}}}},scales:{{x:{{ticks:{{font:{{size:11}}}},grid:{{display:false}}}},y:{{min:0,ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(2)+'M'}},grid:{{color:'rgba(180,180,180,0.25)'}}}}}}}}}});
  
 const vp={{id:'hv',afterDatasetsDraw(c){{const ctx=c.ctx;c.getDatasetMeta(0).data.forEach((b,i)=>{{const v=c.data.datasets[0].data[i];ctx.save();ctx.font='700 8px Segoe UI';ctx.fillStyle='#333';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('R'+(v/1e6).toFixed(1)+'M',b.x+4,b.y);ctx.restore();}});}}}};
 new Chart(document.getElementById('cHBar'),{{type:'bar',plugins:[vp],data:{{
@@ -1483,7 +1534,7 @@ new Chart(document.getElementById('cHBar'),{{type:'bar',plugins:[vp],data:{{
   ]
 }},options:{{indexAxis:'y',responsive:true,maintainAspectRatio:false,
   plugins:{{legend:{{display:true,position:'bottom',labels:{{font:{{size:9}},boxWidth:10}}}}}},
-  scales:{{x:{{min:0,ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(0)+'M'}},grid:{{color:'rgba(180,180,180,0.2)'}}}},y:{{ticks:{{font:{{size:10,weight:'700'}},color:'#333'}},grid:{{display:false}}}}}},layout:{{padding:{{right:42}}}}}}}}}});
+  scales:{{x:{{min:0,ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(0)+'M'}},grid:{{color:'rgba(180,180,180,0.2)'}}}},y:{{ticks:{{font:{{size:10,weight:'700'}},color:'#333'}},grid:{{display:false}}}}}},layout:{{padding:{{right:42}}}}}}}});
  
 const mActs={_mth_acts};
 const mTgts={_mth_tgts};
@@ -1502,7 +1553,7 @@ const body=document.getElementById('monthly-body');
     if(key==='delta'){{v=isFut?null:delta;col=delta<0?'#C00000':'#375623';}}
     const td=document.createElement('td'); td.style.cssText='padding:5px 8px;text-align:right;white-space:nowrap;font-weight:'+(key==='delta'?'700':'400')+';'+(['Jun'].includes(m)?'background:#f0f8f0':'')+';';
     if(v===null||(key==='act'&&isFut)){{td.innerHTML='<span style="color:#ccc">—</span>';}}
-    else{{const fmt='R'+(Math.abs(v)/1e6).toFixed(1)+'M'; td.innerHTML=v<0?'<span style="color:#C00000">('+fmt+')</span>':\`<span style="color:\${{col}}">\${{fmt}}</span>\`;}}
+    else{{const fmt='R'+(Math.abs(v)/1e6).toFixed(1)+'M'; td.innerHTML=v<0?`<span style="color:#C00000">(${{fmt}})</span>`:`<span style="color:${{col}}">${{fmt}}</span>`;}}
     tr.appendChild(td);
   }});
   const tdT=document.createElement('td'); tdT.style.cssText='padding:5px 8px;text-align:right;white-space:nowrap;font-weight:700;background:#DCE6F1';
