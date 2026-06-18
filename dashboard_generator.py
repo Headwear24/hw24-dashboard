@@ -1,7 +1,122 @@
 import pandas as pd, os, json
  
-# Global state — set by initialise()
+# ── Chart.js: embed inline so dashboards work offline / behind firewalls / as PDFs ──
+def _chartjs_tag():
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in [os.path.join(here, 'chart.umd.js'),
+                 os.path.join(here, 'vendor', 'chart.umd.js')]:
+        if os.path.exists(cand):
+            with open(cand, 'r', encoding='utf-8') as f:
+                return '<script>\n' + f.read() + '\n</script>'
+    return '<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>'
+ 
+CHARTJS_TAG = _chartjs_tag()
+ 
+LO_WINDOWS = []            # [(label, start, end), ...]
+ 
+# ── Size codes for item consolidation. EDIT THIS LIST to add sizes. ──
+# Items identical except for a size token are merged (revenue summed).
+# Only these exact tokens are stripped — never guessed — so unrelated items never merge.
+SIZE_CODES = {'XS','S','M','L','XL','XXL','XXXL','2XL','3XL','4XL','5XL',
+              'SM','MED','LGE','LG','OS'}
+ 
+def _base_item_key(code):
+    """Return the size-stripped base key for an item code.
+    e.g. CASTLE-L-CHARL3 -> CASTLE-CHARL3 ; CASTLE-XL-CHARL3 -> CASTLE-CHARL3"""
+    import re
+    raw = str(code)
+    parts = re.split(r'([-/ ])', raw)            # keep separators
+    kept = []
+    for p in parts:
+        if p in ('-', '/', ' '):
+            kept.append(p)
+        elif p.strip().upper() in SIZE_CODES:
+            kept.append('')                       # drop the size token
+        else:
+            kept.append(p)
+    key = ''.join(kept)
+    key = re.sub(r'[-/ ]{2,}', '-', key)          # collapse double separators left behind
+    key = key.strip('-/ ')
+    return key if key else raw
+ 
+def large_orders(start, end, region=None, threshold=100000):
+    """AFS26 (prior-year) invoices > threshold within [start,end].
+    Items consolidated within each invoice; size variants merged. Grouped by client."""
+    if df is None or start is None:
+        return []
+    a26 = df[df['AFS']=='AFS26'].copy()
+    a26['_dt'] = pd.to_datetime(a26['Inv Dt'], errors='coerce')
+    win = a26[(a26['_dt']>=start)&(a26['_dt']<=end)]
+    if region is not None:
+        win = win[win[prov_col].map(REGION_MAP).fillna('Other')==region]
+    if len(win)==0:
+        return []
+    inv_tot = win.groupby('Inv no')['Line Revenue'].sum()
+    big_ids = inv_tot[inv_tot>threshold].index
+    big = win[win['Inv no'].isin(big_ids)].copy()
+    big['_base'] = big['Item No (Stock)'].map(_base_item_key)
+    out=[]
+    for inv_no, g in big.groupby('Inv no'):
+        # consolidate by size-stripped base key: sum revenue, label with base key
+        item_rev = g.groupby('_base')['Line Revenue'].sum().sort_values(ascending=False)
+        items = [(str(k), float(v)) for k,v in item_rev.items() if pd.notna(k) and str(k)]
+        pgrps = sorted(set(str(x).strip() for x in g['CLASS'].tolist() if pd.notna(x) and str(x).strip()))
+        out.append({
+            'inv': str(inv_no),
+            'client': str(g['Cust Name'].iloc[0]),
+            'loc': str(g[prov_col].iloc[0]),
+            'date': pd.to_datetime(g['Inv Dt'].iloc[0]).strftime('%d %b'),
+            'items': items,
+            'pgrps': pgrps,
+            'value': float(g['Line Revenue'].sum()),
+        })
+    from collections import defaultdict
+    by_client=defaultdict(list)
+    for o in out: by_client[o['client']].append(o)
+    client_tot={c:sum(o['value'] for o in v) for c,v in by_client.items()}
+    ordered=[]
+    for c in sorted(client_tot, key=lambda x:-client_tot[x]):
+        ordered.append({'client':c,'total':client_tot[c],
+                        'invoices':sorted(by_client[c], key=lambda o:-o['value'])})
+    return ordered
+ 
+def large_orders_html(region=None):
+    """Render Large Order Watch with two month sub-sections."""
+    if not LO_WINDOWS:
+        return ''
+    outer=f"{LO_WINDOWS[0][1].strftime('%d %b')} \u2013 {LO_WINDOWS[-1][2].strftime('%d %b %Y')}"
+    blocks=[]; grand_inv=0; grand_val=0.0
+    for label,start,end in LO_WINDOWS:
+        data=large_orders(start,end,region)
+        win_lbl=f"{start.strftime('%d %b')} \u2013 {end.strftime('%d %b %Y')}"
+        n_inv=sum(len(c['invoices']) for c in data); val=sum(c['total'] for c in data)
+        grand_inv+=n_inv; grand_val+=val
+        sub=(f'<div style="background:#2E75B6;color:#fff;font-size:10px;font-weight:700;padding:5px 10px;margin-top:6px">'
+             f'{label}: {win_lbl} &nbsp;<span style="font-weight:400;opacity:.85">{n_inv} invoices &bull; R{val/1e6:.2f}M</span></div>')
+        if not data:
+            blocks.append(sub+'<div style="padding:8px 10px;font-size:10px;color:#888">No invoices over R100k in this month.</div>'); continue
+        rows=[sub]
+        rows.append('<div style="display:grid;grid-template-columns:48px 38px 1fr 90px;gap:6px;padding:4px 10px;background:#DCE6F1;color:#1F3864;font-size:8.5px;font-weight:700"><span>Date</span><span style="text-align:center">Loc</span><span>Items (consolidated)</span><span style="text-align:right">Invoice R</span></div>')
+        for c in data:
+            rows.append(f'<div style="display:grid;grid-template-columns:1fr 90px;gap:6px;padding:5px 10px;background:#1F3864;color:#fff;font-size:10px;font-weight:700"><span>{c["client"]}</span><span style="text-align:right">R{c["total"]/1e6:.2f}M</span></div>')
+            for o in c['invoices']:
+                idisp=" &nbsp; ".join(f'<span style="white-space:nowrap">{it} <span style="color:#888">R{rev:,.0f}</span></span>' for it,rev in o['items'][:6])
+                if len(o['items'])>6: idisp+=f' <span style="color:#888">+{len(o["items"])-6} more</span>'
+                rows.append(
+                    f'<div style="display:grid;grid-template-columns:48px 38px 1fr 90px;gap:6px;padding:4px 10px;border-bottom:1px solid #f0f0f0;font-size:9px;background:#fff">'
+                    f'<span style="color:#666">{o["date"]}</span>'
+                    f'<span style="text-align:center"><span style="font-size:8px;padding:1px 3px;border-radius:6px;background:#2E75B622;color:#1F3864;font-weight:700">{o["loc"]}</span></span>'
+                    f'<span style="overflow:hidden;text-overflow:ellipsis">{idisp}</span>'
+                    f'<span style="text-align:right;font-weight:700;color:#1F3864">R{o["value"]:,.0f}</span>'
+                    f'</div>')
+        blocks.append("".join(rows))
+    return (f'<div class="section-hdr" style="margin-top:14px">Large Order Watch &mdash; Prior-Year Orders &gt;R100k for the 2 Months Ahead ({outer}) '
+            f'&nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">{grand_inv} invoices &bull; R{grand_val/1e6:.2f}M &bull; watch for recurrence</span></div>'
+            f'<div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden">{"".join(blocks)}</div>')
+ 
+# Global state \u2014 set by initialise()
 df = afs27 = afs26 = None
+LO_START = LO_END = None
 UPLIFT=1.19; WD_PER=9/20; prov_col='Province Orginal'; sp_col='Sales Person Use'
 WEEKS_PRESENT=['Week 1','Week 2']; WEEK_DAYS={}; CUR_WEEK_LABEL='Week 2'; CUR_WEEK_DAYS=4; CUR_MONTH='Jun'
  
@@ -10,6 +125,7 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     global df, afs27, afs26, UPLIFT, WD_PER, afs26_ytd, afs26_jun
     global sp_lu, branch_dict
     global WEEKS_PRESENT, WEEK_DAYS, CUR_WEEK_LABEL, CUR_WEEK_DAYS, CUR_MONTH
+    global LO_START, LO_END, LO_WINDOWS
     WD_PER = wd_per
     df = pd.read_excel(filepath, sheet_name='AFS 26 Data', header=0)
     afs27 = df[df['AFS']=='AFS27'].copy()
@@ -37,6 +153,16 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
         WEEK_DAYS[w] = int(days) if days else 5
     CUR_WEEK_LABEL = WEEKS_PRESENT[-1]
     CUR_WEEK_DAYS = WEEK_DAYS.get(CUR_WEEK_LABEL, 5)
+    # --- Large-order watch: two month-ahead windows, prior year ---
+    today_dt = pd.to_datetime(afs27['Inv Dt'], errors='coerce').max()
+    if pd.notna(today_dt):
+        base = today_dt - pd.DateOffset(years=1)
+        m1s = base + pd.Timedelta(days=1)
+        m1e = base + pd.DateOffset(months=1)
+        m2s = m1e + pd.Timedelta(days=1)
+        m2e = base + pd.DateOffset(months=2)
+        LO_WINDOWS = [('Month 1', m1s, m1e), ('Month 2', m2s, m2e)]
+        LO_START, LO_END = m1s, m2e   # kept for backward reference
 REGION_MAP={'GP':'Gauteng','LP':'Gauteng','NW':'Gauteng','MP':'Gauteng','FS':'Gauteng',
             'KZN':'KZN','ZN':'KZN','WC':'Western Cape','NC':'Western Cape',
             'EC':'Eastern Cape','ZZZ':'International'}
@@ -96,8 +222,8 @@ def calc(region):
         prod[cls.strip()]={'rev':float(rev),'avg':float(rev/qty if qty else 0),'tgt':int(round(py_cd*UPLIFT))}
     ti=r27[r27['CLASS']!='LPMTO'].groupby(['Item No (Stock)','CLASS']).agg(rev=('Line Revenue','sum'),qty=('Line Inv Qty','sum')).reset_index()
     ti['avg']=ti['rev']/ti['qty']; ti['pct']=ti['rev']/total_rev*100 if total_rev else 0
-    top8=ti.nlargest(min(8,len(ti)),'rev').to_dict('records')
-    bot8=ti[(ti['rev']>=2000)&(ti['qty']>=5)].nsmallest(min(8,len(ti)),'rev').to_dict('records')
+    top8=ti.nlargest(min(10,len(ti)),'rev').to_dict('records')
+    bot8=ti[(ti['rev']>=2000)&(ti['qty']>=5)].nsmallest(min(10,len(ti)),'rev').to_dict('records')
     top10=r27.groupby('Cust Name')['Line Revenue'].sum().nlargest(10)
     cp26=r26y.groupby('Cust Name')['Line Revenue'].sum()
     rev27_all=r27.groupby('Cust Name').agg(rev=('Line Revenue','sum'),inv=('Inv no','nunique')).reset_index()
@@ -209,6 +335,9 @@ def build_html(d, report_date=None):
     ytd_act=int(d['ytd_act']);   tgt_ytd=int(d['tgt_ytd']); ytd_delta=int(d['ytd_delta'])
     w1_act=int(d['w1_act']);     w1_tgt=int(d['w1_tgt'])
     w2_act=int(d['w2_act']);     w2_tgt=int(d['w2_tgt'])
+    rweeks=d['weeks']
+    rmtd_span=" + ".join("W"+w['label'].split()[1] for w in rweeks)
+    jun_mtd_tgt_dyn=sum(w['tgt'] for w in rweeks)
     total_rev=int(d['total_rev']); jun_mtd_tgt=int(d['w1_tgt']+d['w2_tgt'])
  
     # Remaining month targets from pre-computed dict (fast)
@@ -344,6 +473,31 @@ def build_html(d, report_date=None):
   <span style="text-align:right;color:#666">{it["pct"]:.2f}%</span>
 </div>''' for i,it in enumerate(d['bot8'])])
  
+    def _drow(grp):
+        pv=d['prod'].get(grp,{})
+        act=pv.get('rev',0); tgt=pv.get('tgt',0); dl=act-tgt
+        pc=(dl/tgt*100) if tgt else 0
+        dcol='#C00000' if dl<0 else '#375623'
+        dtxt=(f"(R{abs(dl)/1e6:.2f}M)" if abs(dl)>=1e6 else f"(R{abs(dl)/1e3:.1f}K)") if dl<0 else (f"R{dl/1e6:.2f}M" if dl>=1e6 else f"R{dl/1e3:.1f}K")
+        ptxt=f"({abs(pc):.0f}%)" if pc<0 else f"+{pc:.0f}%"
+        return f'<div style="display:grid;grid-template-columns:44px 1fr 40px;padding:3px 6px;border-bottom:1px solid #f0f0f0;font-size:9px"><span style="font-weight:700">{grp}</span><span style="text-align:right;color:{dcol}">{dtxt}</span><span style="text-align:right;color:{dcol}">{ptxt}</span></div>'
+    delta_rows_r=''.join(_drow(g) for g in cls_list)
+    def _irow(it,bg):
+        cls=it["CLASS"].strip()
+        return f'''<div style="display:grid;grid-template-columns:3fr 36px 62px 44px 34px;gap:3px;padding:4px 7px;border-bottom:1px solid #f0f0f0;font-size:8.5px;background:{bg}">
+  <span style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{it["Item No (Stock)"]}</span>
+  <span style="text-align:center"><span style="font-size:7.5px;padding:1px 2px;border-radius:8px;background:{GCOLORS.get(cls,"#888")}22;color:{GCOLORS.get(cls,"#555")};font-weight:700">{cls}</span></span>
+  <span style="text-align:right">{it["rev"]:,.0f}</span>
+  <span style="text-align:right;color:#666">{it["avg"]:.2f}</span>
+  <span style="text-align:right;color:#666">{it["pct"]:.2f}%</span>
+</div>'''
+    _hdr_i='<div class="items-hdr" style="border-radius:0"><span>Product</span><span style="text-align:center">Grp</span><span style="text-align:right">Turnover</span><span style="text-align:right">Avg</span><span style="text-align:right">%</span></div>'
+    _topband='<div style="background:#27500A;color:#fff;font-size:8.5px;font-weight:700;padding:3px 8px;letter-spacing:.3px">TOP 10 ITEMS</div>'
+    _botband='<div style="background:#791F1F;color:#fff;font-size:8.5px;font-weight:700;padding:3px 8px;letter-spacing:.3px;border-top:1px solid #e0e0e0">BOTTOM 10 ITEMS</div>'
+    combined_items=(_hdr_i+_topband
+        +''.join(_irow(it,'#F2F8E8' if i%2==0 else '#EAF3DE') for i,it in enumerate(d['top8']))
+        +_botband
+        +''.join(_irow(it,'#FDF2F2' if i%2==0 else '#FCEBEB') for i,it in enumerate(d['bot8'])))
     top10_rows = client_rows(d['top10'], d['cp26'])
     new_cl_rows = ''.join([f'''<div style="display:grid;grid-template-columns:22px 1fr 70px 58px;gap:8px;align-items:center;padding:6px 12px;border-bottom:1px solid #f0f0f0;font-size:11px;background:{"#fff" if i%2==0 else "#f9f9f9"}">
   <span style="color:#888;font-size:10px">{i+1}</span>
@@ -369,8 +523,21 @@ def build_html(d, report_date=None):
     mar=m['Mar']; apr=m['Apr']; may_=m['May']; jun=m['Jun']
     ytd_act_d=d['ytd_act']-d['tgt_ytd']; ytd_pct_v=ytd_act_d/d['tgt_ytd']*100 if d['tgt_ytd'] else 0
     w1d=d['w1_act']-d['w1_tgt']; w2d=d['w2_act']-d['w2_tgt']
-    mtd_act=d['jun_act']; mtd_tgt=d['w1_tgt']+d['w2_tgt']; mtd_d=mtd_act-mtd_tgt
+    mtd_act=d['jun_act']; mtd_tgt=jun_mtd_tgt_dyn; mtd_d=mtd_act-mtd_tgt
     total_tgt=d['tgt_ytd']+mtd_tgt; total_d_=d['total_rev']-total_tgt
+    # Dynamic regional week rows + chart arrays (all weeks present, partial labelled)
+    rweek_rows = "\n".join(
+        tbl_row(f"{w['label']} ({w['days']} days)" if w['partial'] else w['label'],
+                w['act'], w['tgt'], indent=True)
+        for w in rweeks)
+    _rwk_labels_js = str([ (f"{w['label']} ({w['days']}d)" if w['partial'] else w['label']) for w in rweeks ])
+    _rwk_act_js    = str([w['act'] for w in rweeks])
+    _rwk_tgt_js    = str([w['tgt'] for w in rweeks])
+    # Human descriptor like "W1+W2+W3" and a detail string with each week's days/target
+    rwk_short = "+".join("W"+w['label'].split()[1] for w in rweeks)
+    rwk_detail = " &nbsp;|&nbsp; ".join(
+        f"W{w['label'].split()[1]} = {w['days']} days ({round(min(w['days'],5)/5*100)}%) = {fmtR(w['tgt'])}"
+        for w in rweeks)
  
     def dc(v): return '#C00000' if v<0 else '#375623'
     def dfmt(v): return f"({fmtN(abs(v))})" if v<0 else f"+{fmtN(v)}"
@@ -384,7 +551,7 @@ def build_html(d, report_date=None):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HW24 {r} Sales Dashboard — {report_date}</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+{CHARTJS_TAG}
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#222;padding:16px}}
@@ -419,7 +586,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <body>
 <div class="db">
 <div class="title-bar">HW24 {r.upper()} SALES — DASHBOARD</div>
-<div class="sub-bar"><span>{report_date}</span><span>March 2026 – June 2026 &nbsp;|&nbsp; MTD June W1+W2 &nbsp;|&nbsp; Targets = AFS26 ×1.19</span></div>
+<div class="sub-bar"><span>{report_date}</span><span>March 2026 – June 2026 &nbsp;|&nbsp; MTD June {rwk_short} &nbsp;|&nbsp; Targets = AFS26 ×1.19</span></div>
  
 <div class="kpi-row">
   <div class="kpi"><div class="kpi-label" style="background:#2E75B6">Total Turnover</div><div class="kpi-val" style="color:#1F3864">R{d['total_rev']:,.0f}</div></div>
@@ -478,13 +645,12 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 {tbl_row("March",   mar['act'], mar['tgt'], mar['avg'],  indent=True)}
 {tbl_row("April",   apr['act'], apr['tgt'], apr['avg'],  indent=True)}
 {tbl_row("May",     may_['act'],may_['tgt'],may_['avg'], indent=True)}
-{tbl_row("MTD June (W1+W2)", d['jun_act'], mtd_tgt, jun_avg_price, bold=True)}
-{tbl_row("Week 1",  d['w1_act'], d['w1_tgt'], indent=True)}
-{tbl_row("Week 2",  d['w2_act'], d['w2_tgt'], indent=True)}
+{tbl_row(f"MTD June ({rmtd_span})", d['jun_act'], mtd_tgt, jun_avg_price, bold=True)}
+{rweek_rows}
 {tbl_row("Total incl. June MTD", d['total_rev'], total_tgt, tot_avg_price, total=True)}
 <div class="bold-row" style="display:grid;grid-template-columns:1.9fr 1.1fr 1.1fr 1fr .9fr 1fr;font-size:11px;padding:6px 12px;gap:8px;border-bottom:1px solid #f0f0f0;height:8px"></div>
 {tbl_row("YTD Units (Mar–May)", ytd_units_act, ytd_units_tgt, bold=True)}
-{tbl_row("MTD Units (June W1+W2)", jun_units_act, jun_units_tgt, indent=True)}
+{tbl_row(f"MTD Units (June {rwk_short})", jun_units_act, jun_units_tgt, indent=True)}
 {tbl_row("Total Units incl. June", tot_units_act, tot_units_tgt, total=True)}
 </div>
  
@@ -516,7 +682,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
  
 <div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden" id="ins2-block"></div>
  
-<div class="section-hdr" style="margin-top:14px">National Performance by Region — MTD (June 2026 W1+W2) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">W1 = 5 days (100%) = R7,370,437 &nbsp;|&nbsp; W2 = 2 days (40%) = R2,948,175 &nbsp;|&nbsp; Daily = R1,403,893</span></div>
+<div class="section-hdr" style="margin-top:14px">National Performance by Region — MTD (June 2026 {rwk_short}) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">{rwk_detail}</span></div>
 <div class="mtd-split">
   <div class="loc-tbl-wrap" id="mtd-tbl-wrap">
     <div class="loc-tbl-hdr" style="grid-template-columns:1.6fr .95fr .95fr .8fr .7fr">
@@ -533,6 +699,8 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
     <div id="mtd-canvas-wrap" style="position:relative;flex:1;min-height:160px"><canvas id="cMTD"></canvas></div>
   </div>
 </div>
+ 
+{large_orders_html(r)}
  
 <div class="section-hdr" style="margin-top:14px">Top 10 Clients — {r}</div>
 <div style="margin:0 14px">
@@ -576,21 +744,18 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   {bot_avg_rows}
 </div>
  
-<div class="section-hdr" style="margin-top:14px">YTD Turnover by Product Group &amp; Top/Bottom 8 Items (excl. LPMTO)</div>
-<div style="display:grid;grid-template-columns:1fr 1.3fr 1.3fr;gap:8px;margin:8px 14px 0;align-items:stretch">
+<div class="section-hdr" style="margin-top:14px">YTD Turnover by Product Group &amp; Top/Bottom 10 Items (excl. LPMTO)</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 14px 0;align-items:stretch">
   <div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px;display:flex;flex-direction:column">
-    <div class="chart-title">YTD TURNOVER BY PRODUCT GROUP</div>
-    <div id="hbar-wrap" style="position:relative;flex:1;min-height:200px"><canvas id="cHBar"></canvas></div>
+    <div class="chart-title">YTD TURNOVER BY PRODUCT GROUP — ACTUAL vs TARGET (PY+19%)</div>
+    <div style="font-size:9px;margin-bottom:6px">
+      <div style="display:grid;grid-template-columns:44px 1fr 40px;background:#2E75B6;color:#fff;font-weight:700;padding:4px 6px;border-radius:4px 4px 0 0;font-size:9px"><span>Group</span><span style="text-align:right">Delta (R)</span><span style="text-align:right">%</span></div>
+      {delta_rows_r}
+    </div>
+    <div id="hbar-wrap" style="position:relative;flex:1;min-height:300px"><canvas id="cHBar"></canvas></div>
   </div>
   <div style="display:flex;flex-direction:column;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden">
-    <div style="font-size:10px;font-weight:700;color:#1F3864;padding:6px 10px 4px;background:#f9f9f9;border-bottom:1px solid #e0e0e0">Top 8 Items (excl. LPMTO)</div>
-    <div class="items-hdr" style="border-radius:0"><span>Product</span><span style="text-align:center">Grp</span><span style="text-align:right">Turnover</span><span style="text-align:right">Avg</span><span style="text-align:right">%</span></div>
-    <div style="flex:1">{items_rows}</div>
-  </div>
-  <div style="display:flex;flex-direction:column;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden">
-    <div style="font-size:10px;font-weight:700;color:#1F3864;padding:6px 10px 4px;background:#f9f9f9;border-bottom:1px solid #e0e0e0">Bottom 8 Items (excl. LPMTO)</div>
-    <div class="items-hdr" style="border-radius:0"><span>Product</span><span style="text-align:center">Grp</span><span style="text-align:right">Turnover</span><span style="text-align:right">Avg</span><span style="text-align:right">%</span></div>
-    <div style="flex:1">{bot_rows}</div>
+    {combined_items}
   </div>
 </div>
  
@@ -610,7 +775,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   {sp_region_rows}
 </div>
  
-<div class="footer">HW24 {r} Sales Dashboard &bull; Confidential &bull; Generated {report_date} &bull; Data: March–June 2026 (June W1+W2) &bull; Targets = AFS26 ×1.19</div>
+<div class="footer">HW24 {r} Sales Dashboard &bull; Confidential &bull; Generated {report_date} &bull; Data: March–June 2026 (June {rwk_short}) &bull; Targets = AFS26 ×1.19</div>
 </div>
  
 <script>
@@ -632,7 +797,7 @@ const avgDs = {{
 }};
  
 new Chart(document.getElementById('cPY'),{{type:'line',
-  data:{{labels:['March','April','May','June (W1+W2)'],datasets:[
+  data:{{labels:['March','April','May','June (MTD)'],datasets:[
     {{label:'Actual',data:{d['cum_act']},borderColor:REG_COL,borderWidth:2,borderDash:[],pointRadius:4,pointStyle:'circle',pointBackgroundColor:REG_COL,tension:.3,fill:false,yAxisID:'y'}},
     {{label:'Prior Year',data:{d['cum_py']},borderColor:GREY,borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'triangle',pointBackgroundColor:GREY,tension:.3,fill:false,yAxisID:'y'}},
     {{...avgDs}}
@@ -646,7 +811,7 @@ new Chart(document.getElementById('cPY'),{{type:'line',
 }});
  
 new Chart(document.getElementById('cYTD'),{{type:'line',
-  data:{{labels:['March','April','May','June (W1+W2)'],datasets:[
+  data:{{labels:['March','April','May','June (MTD)'],datasets:[
     {{label:'Target',data:{d['cum_tgt']},borderColor:'#C00000',borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'rectRot',pointBackgroundColor:'#C00000',tension:.3,fill:false,yAxisID:'y'}},
     {{label:'Actual',data:{d['cum_act']},borderColor:REG_COL,borderWidth:2,borderDash:[],pointRadius:4,pointStyle:'circle',pointBackgroundColor:REG_COL,tension:.3,fill:false,yAxisID:'y'}},
     {{...avgDs}}
@@ -661,8 +826,8 @@ new Chart(document.getElementById('cYTD'),{{type:'line',
  
 // ── Product group horizontal bar ──────────────────────────────────────────────
 const vp={{id:'hv',afterDatasetsDraw(c){{const ctx=c.ctx;c.data.datasets.forEach((ds,di)=>{{c.getDatasetMeta(di).data.forEach((b,i)=>{{
-  if(di===0){{const v=ds.data[i];ctx.save();ctx.font='700 9px Segoe UI,Arial';ctx.fillStyle='#333';
-  ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('R'+(v/1e6).toFixed(1)+'M',b.x+4,b.y);ctx.restore();}}}});}});}}}};
+  const v=ds.data[i];ctx.save();ctx.font='700 9px Segoe UI,Arial';ctx.fillStyle=di===0?'#1F3864':'#888';
+  ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('R'+(v/1e6).toFixed(1)+'M',b.x+4,b.y);ctx.restore();}});}});}}}};
 window.addEventListener('load',function(){{
   const iT=document.getElementById('items-tbl'),iH=document.querySelector('.items-hdr');
   document.getElementById('hbar-wrap').style.height=Math.max(200,300)+'px';
@@ -830,10 +995,10 @@ window.addEventListener('load',function(){{
   const tH=tw.offsetHeight; cw.style.minHeight=tH+'px';
   new Chart(document.getElementById('cMTD'),{{type:'bar',
     data:{{
-      labels:['Week 1','Week 2'],
+      labels:{_rwk_labels_js},
       datasets:[
-        {{label:'Actual R',  data:[{w1_act},{w2_act}], backgroundColor:'#22A548',borderRadius:0,barPercentage:1.0,categoryPercentage:0.85}},
-        {{label:'Weekly Target',data:[{w1_tgt},{w2_tgt}],backgroundColor:'#8B0000',borderRadius:0,barPercentage:1.0,categoryPercentage:0.85}}
+        {{label:'Actual R',  data:{_rwk_act_js}, backgroundColor:'#22A548',borderRadius:0,barPercentage:1.0,categoryPercentage:0.85}},
+        {{label:'Weekly Target',data:{_rwk_tgt_js},backgroundColor:'#8B0000',borderRadius:0,barPercentage:1.0,categoryPercentage:0.85}}
       ]
     }},
     options:{{
@@ -967,8 +1132,8 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
     # ── Top 8 items ────────────────────────────────────────────────────────────
     ti=r27[r27['CLASS']!='LPMTO'].groupby(['Item No (Stock)','CLASS']).agg(rev=('Line Revenue','sum'),qty=('Line Inv Qty','sum')).reset_index()
     ti['avg']=ti['rev']/ti['qty']; ti['pct']=ti['rev']/total_rev*100
-    top8=ti.nlargest(8,'rev').to_dict('records')
-    bot8=ti[(ti['rev']>=10000)&(ti['qty']>=50)].nsmallest(8,'rev').to_dict('records')
+    top8=ti.nlargest(10,'rev').to_dict('records')
+    bot8=ti[(ti['rev']>=10000)&(ti['qty']>=50)].nsmallest(10,'rev').to_dict('records')
  
     # ── Clients ────────────────────────────────────────────────────────────────
     cp26=r26_ytd.groupby('Cust Name')['Line Revenue'].sum()
@@ -1121,6 +1286,12 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
       <span style="text-align:right;color:#666">{it["pct"]:.2f}%</span>
     </div>''')
         return ''.join(rows)
+ 
+    def combined_items_table(top, bot):
+        hdr='<div class="items-hdr" style="border-radius:0"><span>Product</span><span style="text-align:center">Grp</span><span style="text-align:right">Turnover</span><span style="text-align:right">Avg</span><span style="text-align:right">%</span></div>'
+        top_band='<div style="background:#27500A;color:#fff;font-size:8.5px;font-weight:700;padding:3px 8px;letter-spacing:.3px">TOP 10 ITEMS</div>'
+        bot_band='<div style="background:#791F1F;color:#fff;font-size:8.5px;font-weight:700;padding:3px 8px;letter-spacing:.3px;border-top:1px solid #e0e0e0">BOTTOM 10 ITEMS</div>'
+        return hdr+top_band+items_rows(top, bg_even='#F2F8E8')+bot_band+items_rows(bot, bg_even='#FDF2F2')
  
     def avg_rows(df_a, is_top, max_=10):
         if len(df_a)==0: return '<div style="padding:10px;color:#888">Insufficient data</div>'
@@ -1313,7 +1484,7 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HW24 Group Sales Dashboard — {report_date}</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+{CHARTJS_TAG}
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#222;padding:16px}}
@@ -1431,6 +1602,8 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 </div>
  
 <!-- Top 10 clients -->
+{large_orders_html(None)}
+ 
 <div class="section-hdr" style="margin-top:14px">Top 10 Clients Nationally — YTD</div>
 <div style="margin:0 14px">
   <div style="display:grid;grid-template-columns:22px 1fr 120px 72px 72px 68px;gap:8px;align-items:center;padding:6px 12px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0"><span>#</span><span>Client</span><span>Province</span><span style="text-align:right">YTD Sales</span><span style="text-align:right">PY YTD</span><span style="text-align:right">YoY %</span></div>
@@ -1464,25 +1637,18 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 </div>
  
 <!-- Product group -->
-<div class="section-hdr" style="margin-top:14px">YTD Turnover by Product Group &amp; Top/Bottom 8 Items (excl. LPMTO)</div>
-<div style="display:grid;grid-template-columns:1fr 1.3fr 1.3fr;gap:8px;margin:8px 14px 0;align-items:stretch">
+<div class="section-hdr" style="margin-top:14px">YTD Turnover by Product Group &amp; Top/Bottom 10 Items (excl. LPMTO)</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 14px 0;align-items:stretch">
   <div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px;display:flex;flex-direction:column">
     <div class="chart-title">YTD TURNOVER BY PRODUCT GROUP — ACTUAL vs TARGET (PY+19%)</div>
     <div id="hbar-delta" style="display:flex;flex-direction:column;justify-content:center;min-width:130px;padding:2px 0;font-size:9px;margin-bottom:6px">
       <div style="display:grid;grid-template-columns:44px 1fr 40px;background:#2E75B6;color:#fff;font-weight:700;padding:4px 6px;border-radius:4px 4px 0 0;font-size:9px"><span>Group</span><span style="text-align:right">Delta (R)</span><span style="text-align:right">%</span></div>
       {delta_rows}
     </div>
-    <div id="hbar-wrap" style="position:relative;flex:1;min-height:160px"><canvas id="cHBar"></canvas></div>
+    <div id="hbar-wrap" style="position:relative;flex:1;min-height:340px"><canvas id="cHBar"></canvas></div>
   </div>
   <div style="display:flex;flex-direction:column;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden">
-    <div style="font-size:10px;font-weight:700;color:#1F3864;padding:6px 10px 4px;background:#f9f9f9;border-bottom:1px solid #e0e0e0">Top 8 Items (excl. LPMTO)</div>
-    <div class="items-hdr" style="border-radius:0"><span>Product</span><span style="text-align:center">Grp</span><span style="text-align:right">Turnover</span><span style="text-align:right">Avg</span><span style="text-align:right">%</span></div>
-    <div>{items_rows(top8)}</div>
-  </div>
-  <div style="display:flex;flex-direction:column;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden">
-    <div style="font-size:10px;font-weight:700;color:#1F3864;padding:6px 10px 4px;background:#f9f9f9;border-bottom:1px solid #e0e0e0">Bottom 8 Items (excl. LPMTO)</div>
-    <div class="items-hdr" style="border-radius:0"><span>Product</span><span style="text-align:center">Grp</span><span style="text-align:right">Turnover</span><span style="text-align:right">Avg</span><span style="text-align:right">%</span></div>
-    <div>{items_rows(bot8)}</div>
+    {combined_items_table(top8, bot8)}
   </div>
 </div>
  
@@ -1525,7 +1691,7 @@ new Chart(document.getElementById('cMTD'),{{type:'bar',data:{{labels:{_wk_labels
   {{label:'Target',data:{_wk_tgt_js},backgroundColor:'#8B0000',barPercentage:1.0,categoryPercentage:0.85}}
 ]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{label:ctx=>'R'+Math.round(ctx.raw).toLocaleString()}}}}}},scales:{{x:{{ticks:{{font:{{size:11}}}},grid:{{display:false}}}},y:{{min:0,ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(2)+'M'}},grid:{{color:'rgba(180,180,180,0.25)'}}}}}}}}}});
  
-const vp={{id:'hv',afterDatasetsDraw(c){{const ctx=c.ctx;c.getDatasetMeta(0).data.forEach((b,i)=>{{const v=c.data.datasets[0].data[i];ctx.save();ctx.font='700 8px Segoe UI';ctx.fillStyle='#333';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('R'+(v/1e6).toFixed(1)+'M',b.x+4,b.y);ctx.restore();}});}}}};
+const vp={{id:'hv',afterDatasetsDraw(c){{const ctx=c.ctx;c.data.datasets.forEach((ds,di)=>{{c.getDatasetMeta(di).data.forEach((b,i)=>{{const v=ds.data[i];ctx.save();ctx.font='700 8px Segoe UI';ctx.fillStyle=di===0?'#1F3864':'#888';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('R'+(v/1e6).toFixed(1)+'M',b.x+4,b.y);ctx.restore();}});}});}}}};
 new Chart(document.getElementById('cHBar'),{{type:'bar',plugins:[vp],data:{{
   labels:['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP'],
   datasets:[
