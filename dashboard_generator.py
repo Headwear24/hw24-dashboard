@@ -13,6 +13,7 @@ def _chartjs_tag():
 CHARTJS_TAG = _chartjs_tag()
  
 LO_WINDOWS = []            # [(label, start, end), ...]
+REPORT_DATE = None         # data-derived report date (latest invoice date)
  
 # ── Size codes for item consolidation. EDIT THIS LIST to add sizes. ──
 # Items identical except for a size token are merged (revenue summed).
@@ -40,8 +41,9 @@ def _base_item_key(code):
     return key if key else raw
  
 def large_orders(start, end, region=None, threshold=100000):
-    """AFS26 (prior-year) invoices > threshold within [start,end].
-    Items consolidated within each invoice; size variants merged. Grouped by client."""
+    """AFS26 (prior-year) qualifying invoices (>threshold) within [start,end].
+    Items summed per client+item across the whole month (size variants merged).
+    Grouped by client; no invoice/date detail."""
     if df is None or start is None:
         return []
     a26 = df[df['AFS']=='AFS26'].copy()
@@ -54,64 +56,66 @@ def large_orders(start, end, region=None, threshold=100000):
     inv_tot = win.groupby('Inv no')['Line Revenue'].sum()
     big_ids = inv_tot[inv_tot>threshold].index
     big = win[win['Inv no'].isin(big_ids)].copy()
+    if len(big)==0:
+        return []
     big['_base'] = big['Item No (Stock)'].map(_base_item_key)
-    out=[]
-    for inv_no, g in big.groupby('Inv no'):
-        # consolidate by size-stripped base key: sum revenue, label with base key
-        item_rev = g.groupby('_base')['Line Revenue'].sum().sort_values(ascending=False)
-        items = [(str(k), float(v)) for k,v in item_rev.items() if pd.notna(k) and str(k)]
-        pgrps = sorted(set(str(x).strip() for x in g['CLASS'].tolist() if pd.notna(x) and str(x).strip()))
-        out.append({
-            'inv': str(inv_no),
-            'client': str(g['Cust Name'].iloc[0]),
-            'loc': str(g[prov_col].iloc[0]),
-            'date': pd.to_datetime(g['Inv Dt'].iloc[0]).strftime('%d %b'),
-            'items': items,
-            'pgrps': pgrps,
-            'value': float(g['Line Revenue'].sum()),
-        })
     from collections import defaultdict
-    by_client=defaultdict(list)
-    for o in out: by_client[o['client']].append(o)
-    client_tot={c:sum(o['value'] for o in v) for c,v in by_client.items()}
+    clients=defaultdict(lambda: {'items':defaultdict(lambda:{'rev':0.0,'pg':set(),'loc':set()}), 'total':0.0})
+    for _,row in big.iterrows():
+        cl=str(row['Cust Name']); base=str(row['_base'])
+        if not base or base=='nan': continue
+        rev=float(row['Line Revenue']) if pd.notna(row['Line Revenue']) else 0.0
+        e=clients[cl]['items'][base]
+        e['rev']+=rev
+        if pd.notna(row['CLASS']) and str(row['CLASS']).strip(): e['pg'].add(str(row['CLASS']).strip())
+        if pd.notna(row[prov_col]): e['loc'].add(str(row[prov_col]))
+        clients[cl]['total']+=rev
     ordered=[]
-    for c in sorted(client_tot, key=lambda x:-client_tot[x]):
-        ordered.append({'client':c,'total':client_tot[c],
-                        'invoices':sorted(by_client[c], key=lambda o:-o['value'])})
+    for cl in sorted(clients, key=lambda c:-clients[c]['total']):
+        items=[{'item':k,'rev':v['rev'],
+                'pg':",".join(sorted(v['pg'])),
+                'loc':",".join(sorted(v['loc']))}
+               for k,v in clients[cl]['items'].items()]
+        items.sort(key=lambda x:-x['rev'])
+        ordered.append({'client':cl,'total':clients[cl]['total'],'items':items})
     return ordered
  
-def large_orders_html(region=None):
-    """Render Large Order Watch with two month sub-sections."""
+def large_orders_html(region=None, threshold=100000):
+    """Render Large Order Watch: 2 months, Month 1 green / Month 2 red palette.
+    Per client, items summed across the month. No dates."""
     if not LO_WINDOWS:
         return ''
     outer=f"{LO_WINDOWS[0][1].strftime('%d %b')} \u2013 {LO_WINDOWS[-1][2].strftime('%d %b %Y')}"
-    blocks=[]; grand_inv=0; grand_val=0.0
-    for label,start,end in LO_WINDOWS:
-        data=large_orders(start,end,region)
+    # palettes matching top/bottom-10 tables
+    pal=[{'band':'#27500A','row_a':'#F2F8E8','row_b':'#EAF3DE','client':'#1F3864'},   # Month 1 green
+         {'band':'#791F1F','row_a':'#FDF2F2','row_b':'#FCEBEB','client':'#791F1F'}]    # Month 2 red
+    blocks=[]; grand_val=0.0; grand_n=0
+    for wi,(label,start,end) in enumerate(LO_WINDOWS):
+        data=large_orders(start,end,region,threshold)
+        c=pal[wi % len(pal)]
         win_lbl=f"{start.strftime('%d %b')} \u2013 {end.strftime('%d %b %Y')}"
-        n_inv=sum(len(c['invoices']) for c in data); val=sum(c['total'] for c in data)
-        grand_inv+=n_inv; grand_val+=val
-        sub=(f'<div style="background:#2E75B6;color:#fff;font-size:10px;font-weight:700;padding:5px 10px;margin-top:6px">'
-             f'{label}: {win_lbl} &nbsp;<span style="font-weight:400;opacity:.85">{n_inv} invoices &bull; R{val/1e6:.2f}M</span></div>')
+        val=sum(x['total'] for x in data); n_cl=len(data)
+        grand_val+=val; grand_n+=n_cl
+        sub=(f'<div style="background:{c["band"]};color:#fff;font-size:10px;font-weight:700;padding:5px 10px;margin-top:6px;letter-spacing:.2px">'
+             f'{label}: {win_lbl} &nbsp;<span style="font-weight:400;opacity:.85">{n_cl} clients &bull; R{val/1e6:.2f}M</span></div>')
         if not data:
-            blocks.append(sub+'<div style="padding:8px 10px;font-size:10px;color:#888">No invoices over R100k in this month.</div>'); continue
+            blocks.append(sub+f'<div style="padding:8px 10px;font-size:10px;color:#888">No invoices over R{int(threshold/1000)}k in this month.</div>'); continue
         rows=[sub]
-        rows.append('<div style="display:grid;grid-template-columns:48px 38px 1fr 90px;gap:6px;padding:4px 10px;background:#DCE6F1;color:#1F3864;font-size:8.5px;font-weight:700"><span>Date</span><span style="text-align:center">Loc</span><span>Items (consolidated)</span><span style="text-align:right">Invoice R</span></div>')
-        for c in data:
-            rows.append(f'<div style="display:grid;grid-template-columns:1fr 90px;gap:6px;padding:5px 10px;background:#1F3864;color:#fff;font-size:10px;font-weight:700"><span>{c["client"]}</span><span style="text-align:right">R{c["total"]/1e6:.2f}M</span></div>')
-            for o in c['invoices']:
-                idisp=" &nbsp; ".join(f'<span style="white-space:nowrap">{it} <span style="color:#888">R{rev:,.0f}</span></span>' for it,rev in o['items'][:6])
-                if len(o['items'])>6: idisp+=f' <span style="color:#888">+{len(o["items"])-6} more</span>'
+        rows.append(f'<div style="display:grid;grid-template-columns:40px 1fr 110px 90px;gap:6px;padding:4px 10px;background:{c["row_b"]};color:{c["client"]};font-size:8.5px;font-weight:700"><span style="text-align:center">Loc</span><span>Item (consolidated)</span><span>P-Group</span><span style="text-align:right">Revenue</span></div>')
+        for ci,cl in enumerate(data):
+            rows.append(f'<div style="display:grid;grid-template-columns:1fr 90px;gap:6px;padding:5px 10px;background:{c["client"]};color:#fff;font-size:10px;font-weight:700"><span>{cl["client"]}</span><span style="text-align:right">R{cl["total"]/1e6:.2f}M</span></div>')
+            for ii,it in enumerate(cl['items']):
+                bg=c['row_a'] if ii%2==0 else c['row_b']
                 rows.append(
-                    f'<div style="display:grid;grid-template-columns:48px 38px 1fr 90px;gap:6px;padding:4px 10px;border-bottom:1px solid #f0f0f0;font-size:9px;background:#fff">'
-                    f'<span style="color:#666">{o["date"]}</span>'
-                    f'<span style="text-align:center"><span style="font-size:8px;padding:1px 3px;border-radius:6px;background:#2E75B622;color:#1F3864;font-weight:700">{o["loc"]}</span></span>'
-                    f'<span style="overflow:hidden;text-overflow:ellipsis">{idisp}</span>'
-                    f'<span style="text-align:right;font-weight:700;color:#1F3864">R{o["value"]:,.0f}</span>'
+                    f'<div style="display:grid;grid-template-columns:40px 1fr 110px 90px;gap:6px;padding:4px 10px;border-bottom:1px solid #00000010;font-size:9px;background:{bg}">'
+                    f'<span style="text-align:center"><span style="font-size:8px;padding:1px 3px;border-radius:6px;background:#00000012;color:{c["client"]};font-weight:700">{it["loc"]}</span></span>'
+                    f'<span style="overflow:hidden;text-overflow:ellipsis;font-weight:600">{it["item"]}</span>'
+                    f'<span style="color:#555;font-size:8.5px">{it["pg"]}</span>'
+                    f'<span style="text-align:right;font-weight:700;color:{c["client"]}">R{it["rev"]:,.0f}</span>'
                     f'</div>')
         blocks.append("".join(rows))
-    return (f'<div class="section-hdr" style="margin-top:14px">Large Order Watch &mdash; Prior-Year Orders &gt;R100k for the 2 Months Ahead ({outer}) '
-            f'&nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">{grand_inv} invoices &bull; R{grand_val/1e6:.2f}M &bull; watch for recurrence</span></div>'
+    return (f'<div class="section-hdr" style="margin-top:14px">Large Order Watch &mdash; Prior-Year Orders &gt;R{int(threshold/1000)}k for the 2 Months Ahead ({outer}) '
+            f'&nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">items consolidated &bull; R{grand_val/1e6:.2f}M &bull; watch for recurrence</span></div>'
             f'<div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden">{"".join(blocks)}</div>')
  
 # Global state \u2014 set by initialise()
@@ -128,6 +132,12 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     global LO_START, LO_END, LO_WINDOWS
     WD_PER = wd_per
     df = pd.read_excel(filepath, sheet_name='AFS 26 Data', header=0)
+    # ── Standing rule: zero out HEA14532 (Pick N Pay Retail) — revenue & qty to 0 ──
+    # Applied at load so it flows into every total, split, chart and the BI extract.
+    _zero_mask = df['Customer'].astype(str).str.strip() == 'HEA14532'
+    if _zero_mask.any():
+        df.loc[_zero_mask, 'Line Revenue'] = 0
+        df.loc[_zero_mask, 'Line Inv Qty'] = 0
     afs27 = df[df['AFS']=='AFS27'].copy()
     afs26 = df[df['AFS']=='AFS26'].copy()
     for d_ in [afs27, afs26]:
@@ -155,7 +165,10 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     CUR_WEEK_DAYS = WEEK_DAYS.get(CUR_WEEK_LABEL, 5)
     # --- Large-order watch: two month-ahead windows, prior year ---
     today_dt = pd.to_datetime(afs27['Inv Dt'], errors='coerce').max()
+    global REPORT_DATE
     if pd.notna(today_dt):
+        # report date = latest invoice date in the data (platform-independent formatting)
+        REPORT_DATE = f"{today_dt.day} {today_dt.strftime('%b %Y')}"
         base = today_dt - pd.DateOffset(years=1)
         m1s = base + pd.Timedelta(days=1)
         m1e = base + pd.DateOffset(months=1)
@@ -282,6 +295,13 @@ def calc(region):
         md2 = r27[r27['Period1']==p1]
         q2 = md2['Line Inv Qty'].sum()
         monthly_avg_prices.append(float(round(md2['Line Revenue'].sum()/q2, 2)) if q2>0 else 0.0)
+    # Prior-year monthly avg prices (AFS26, same region)
+    monthly_avg_prices_py = []
+    r26reg = afs26[afs26['Region']==region]
+    for p1 in ['Mar','Apr','May','Jun']:
+        md3 = r26reg[r26reg['Period1']==p1]
+        q3 = md3['Line Inv Qty'].sum()
+        monthly_avg_prices_py.append(float(round(md3['Line Revenue'].sum()/q3, 2)) if q3>0 else 0.0)
  
     return dict(region=region,total_rev=total_rev,total_units=total_units,avg_price=avg_price,
                 ytd_avg_price=ytd_avg_price,jun_avg_price=jun_avg_price,tot_avg_price=tot_avg_price,
@@ -289,6 +309,7 @@ def calc(region):
                 jun_units_act=jun_units_act,jun_units_tgt=jun_units_tgt,chart_max=chart_max,
                 tot_units_act=tot_units_act,tot_units_tgt=tot_units_tgt,
                 monthly_avg_prices=monthly_avg_prices,
+                monthly_avg_prices_py=monthly_avg_prices_py,
                 clients=clients,invoices=invoices,ytd_act=ytd_act,tgt_ytd=tgt_ytd,
                 ytd_delta=ytd_act-tgt_ytd,tgt_jun_pro=tgt_jun_pro,tgt_jun_full=tgt_jun_full,
                 weekly_tgt=weekly_tgt,w1_act=w1_act,w1_tgt=w1_tgt,w2_act=w2_act,w2_tgt=w2_tgt,
@@ -305,7 +326,7 @@ MONTH_LABELS={'Mar':'March','Apr':'April','May':'May','Jun':'June'}
 def build_html(d, report_date=None):
     import datetime
     if report_date is None:
-        report_date = datetime.date.today().strftime('%-d %b %Y')
+        report_date = REPORT_DATE or datetime.date.today().strftime('%-d %b %Y')
     r=d['region']; c=REG_COLS[r]; m=d['monthly']
     ytd_d=d['ytd_delta']; ytd_p=ytd_d/d['tgt_ytd']*100 if d['tgt_ytd'] else 0
     tgt_mtd=d['w1_tgt']+d['w2_tgt']; mtd_d=d['jun_act']-tgt_mtd
@@ -322,8 +343,9 @@ def build_html(d, report_date=None):
  
     # Monthly avg prices for charts
     avg_prices = d['monthly_avg_prices']
-    # Determine sensible y2 axis range
-    valid_avgs = [v for v in avg_prices if v > 0]
+    avg_prices_py = d['monthly_avg_prices_py']
+    # Determine sensible y2 axis range (include both CY and PY avg prices)
+    valid_avgs = [v for v in (avg_prices + avg_prices_py) if v > 0]
     y2_min = max(0, round(min(valid_avgs)/10)*10 - 10) if valid_avgs else 0
     y2_max = round(max(valid_avgs)/10)*10 + 20 if valid_avgs else 100
  
@@ -663,6 +685,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
       <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:2px;background:{c}"></span>Actual</span>
       <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #888780"></span>Prior Year</span>
       <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:0;border-top:1.5px dotted #888780"></span><span style="color:#888">Avg Price</span></span>
+      <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:0;border-top:1.5px dotted #B9A36B"></span><span style="color:#B9A36B">Avg Price PY</span></span>
     </div>
     <div style="position:relative;height:190px"><canvas id="cPY"></canvas></div>
   </div>
@@ -672,6 +695,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
       <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #C00000"></span>Target</span>
       <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:2px;background:{c}"></span>Actual</span>
       <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:0;border-top:1.5px dotted #888780"></span><span style="color:#888">Avg Price</span></span>
+      <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:0;border-top:1.5px dotted #B9A36B"></span><span style="color:#B9A36B">Avg Price PY</span></span>
     </div>
     <div style="position:relative;height:190px"><canvas id="cYTD"></canvas></div>
   </div>
@@ -783,6 +807,7 @@ const gridC='rgba(128,128,128,0.1)', REG_COL='{c}', GREY='#888780';
  
 // ── Charts ────────────────────────────────────────────────────────────────────
 const avgPrices = {avg_prices};
+const avgPricesPY = {avg_prices_py};
 const y2Axis = {{
   position:'right', min:{y2_min}, max:{y2_max},
   ticks:{{font:{{size:9}},color:GREY,stepSize:5,callback:v=>'R'+v.toFixed(0)}},
@@ -795,12 +820,19 @@ const avgDs = {{
   pointRadius:3,pointStyle:'circle',pointBackgroundColor:GREY,
   tension:.3,fill:false,yAxisID:'y2'
 }};
+const avgDsPY = {{
+  label:'Avg Price PY (R)',data:avgPricesPY,type:'line',
+  borderColor:'#B9A36B',borderWidth:1.5,borderDash:[1,3],
+  pointRadius:3,pointStyle:'rect',pointBackgroundColor:'#B9A36B',
+  tension:.3,fill:false,yAxisID:'y2'
+}};
  
 new Chart(document.getElementById('cPY'),{{type:'line',
   data:{{labels:['March','April','May','June (MTD)'],datasets:[
     {{label:'Actual',data:{d['cum_act']},borderColor:REG_COL,borderWidth:2,borderDash:[],pointRadius:4,pointStyle:'circle',pointBackgroundColor:REG_COL,tension:.3,fill:false,yAxisID:'y'}},
     {{label:'Prior Year',data:{d['cum_py']},borderColor:GREY,borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'triangle',pointBackgroundColor:GREY,tension:.3,fill:false,yAxisID:'y'}},
-    {{...avgDs}}
+    {{...avgDs}},
+    {{...avgDsPY}}
   ]}},
   options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},
     scales:{{
@@ -814,7 +846,8 @@ new Chart(document.getElementById('cYTD'),{{type:'line',
   data:{{labels:['March','April','May','June (MTD)'],datasets:[
     {{label:'Target',data:{d['cum_tgt']},borderColor:'#C00000',borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'rectRot',pointBackgroundColor:'#C00000',tension:.3,fill:false,yAxisID:'y'}},
     {{label:'Actual',data:{d['cum_act']},borderColor:REG_COL,borderWidth:2,borderDash:[],pointRadius:4,pointStyle:'circle',pointBackgroundColor:REG_COL,tension:.3,fill:false,yAxisID:'y'}},
-    {{...avgDs}}
+    {{...avgDs}},
+    {{...avgDsPY}}
   ]}},
   options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},
     scales:{{
@@ -1043,8 +1076,10 @@ if __name__ == '__main__':
 # NATIONAL DASHBOARD GENERATOR
 # ══════════════════════════════════════════════════════════════════════════════
  
-def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elapsed=4):
+def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     """Generate the complete national dashboard HTML. Call initialise() first."""
+    if report_date is None:
+        report_date = REPORT_DATE or "12 Jun 2026"
     import pandas as pd
  
     # ── Data references from global state ─────────────────────────────────────
@@ -1079,6 +1114,7 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
     mar_act=mrev(r27,'Mar'); apr_act=mrev(r27,'Apr'); may_act=mrev(r27,'May'); jun_act=mrev(r27,'Jun')
     mar_py =mrev(r26,'Mar'); apr_py =mrev(r26,'Apr'); may_py =mrev(r26,'May'); jun_py =mrev(r26,'Jun')
     mar_avg=mavg(r27,'Mar'); apr_avg=mavg(r27,'Apr'); may_avg=mavg(r27,'May'); jun_avg=mavg(r27,'Jun')
+    mar_avg_py=mavg(r26,'Mar'); apr_avg_py=mavg(r26,'Apr'); may_avg_py=mavg(r26,'May'); jun_avg_py=mavg(r26,'Jun')
  
     ytd_act = mar_act+apr_act+may_act
     ytd_py  = mar_py+apr_py+may_py
@@ -1446,7 +1482,8 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
  
     # ── Pre-compute all JS data strings (avoids f-string brace confusion) ────
     _avgs    = [round(mar_avg,2), round(apr_avg,2), round(may_avg,2), round(jun_avg,2)]
-    _valid_a = [v for v in _avgs if v>0]
+    _avgs_py = [round(mar_avg_py,2), round(apr_avg_py,2), round(may_avg_py,2), round(jun_avg_py,2)]
+    _valid_a = [v for v in (_avgs+_avgs_py) if v>0]
     _y2_min  = max(0, round(min(_valid_a)/10)*10 - 10) if _valid_a else 0
     _y2_max  = round(max(_valid_a)/10)*10 + 20         if _valid_a else 100
  
@@ -1454,6 +1491,7 @@ def generate_national(report_date="12 Jun 2026", week_label="Week 2", days_elaps
     _cum_tgt = str(cum_tgt)
     _cum_py  = str(cum_py)
     _avgs_js = str(_avgs)
+    _avgs_py_js = str(_avgs_py)
  
     _prod_act_js = str([round(float(prod.get(k,{}).get('rev',0))) for k in ['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP']])
     _prod_tgt_js = str([round(float(prod.get(k,{}).get('tgt',0))) for k in ['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP']])
@@ -1569,14 +1607,14 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   <div class="chart-box">
     <div class="chart-title">YTD CUMULATIVE ACTUAL vs PY (MAR–JUN, JUN PRO-RATED)</div>
     <div style="display:flex;gap:10px;justify-content:center;margin-bottom:6px;font-size:9px;color:#666">
-      <span>── Actual &nbsp;</span><span style="border-top:2px dashed #888780;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span>&nbsp;Prior Year &nbsp;</span><span style="border-top:1.5px dotted #888780;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span style="color:#888780">&nbsp;Avg Price</span>
+      <span>── Actual &nbsp;</span><span style="border-top:2px dashed #888780;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span>&nbsp;Prior Year &nbsp;</span><span style="border-top:1.5px dotted #888780;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span style="color:#888780">&nbsp;Avg Price &nbsp;</span><span style="border-top:1.5px dotted #B9A36B;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span style="color:#B9A36B">&nbsp;Avg Price PY</span>
     </div>
     <div style="position:relative;height:190px"><canvas id="cPY"></canvas></div>
   </div>
   <div class="chart-box">
     <div class="chart-title">YTD CUMULATIVE ACTUAL vs TARGET (MAR–JUN, JUN PRO-RATED)</div>
     <div style="display:flex;gap:10px;justify-content:center;margin-bottom:6px;font-size:9px;color:#666">
-      <span style="border-top:2px dashed #C00000;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span>&nbsp;Target &nbsp;</span>── Actual
+      <span style="border-top:2px dashed #C00000;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span>&nbsp;Target &nbsp;</span><span>── Actual &nbsp;</span><span style="border-top:1.5px dotted #888780;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span style="color:#888780">&nbsp;Avg Price &nbsp;</span><span style="border-top:1.5px dotted #B9A36B;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span style="color:#B9A36B">&nbsp;Avg Price PY</span>
     </div>
     <div style="position:relative;height:190px"><canvas id="cYTD"></canvas></div>
   </div>
@@ -1602,7 +1640,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 </div>
  
 <!-- Top 10 clients -->
-{large_orders_html(None)}
+{large_orders_html(None, 300000)}
  
 <div class="section-hdr" style="margin-top:14px">Top 10 Clients Nationally — YTD</div>
 <div style="margin:0 14px">
@@ -1671,19 +1709,23 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <script>
 const gridC='rgba(128,128,128,0.1)', GREY='#888780', AC='#1D9E75';
 const avgs={_avgs_js};
+const avgsPY={_avgs_py_js};
 const avgDs={{label:'Avg Price',data:avgs,type:'line',borderColor:GREY,borderWidth:1.5,borderDash:[2,3],pointRadius:3,fill:false,yAxisID:'y2'}};
+const avgDsPY={{label:'Avg Price PY',data:avgsPY,type:'line',borderColor:'#B9A36B',borderWidth:1.5,borderDash:[1,3],pointRadius:3,pointStyle:'rect',fill:false,yAxisID:'y2'}};
 const y2={{position:'right',min:{_y2_min},max:{_y2_max},ticks:{{font:{{size:9}},color:GREY,callback:v=>'R'+v.toFixed(0)}},grid:{{display:false}},title:{{display:true,text:'Avg Price (R)',font:{{size:9}},color:GREY}}}};
  
 new Chart(document.getElementById('cPY'),{{type:'line',data:{{labels:['March','April','May','June (MTD)'],datasets:[
   {{label:'Actual',data:{_cum_act},borderColor:AC,borderWidth:2,pointRadius:4,pointStyle:'circle',pointBackgroundColor:AC,tension:.3,fill:false,yAxisID:'y'}},
   {{label:'PY',data:{_cum_py},borderColor:GREY,borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'triangle',pointBackgroundColor:GREY,tension:.3,fill:false,yAxisID:'y'}},
-  {{...avgDs}}
+  {{...avgDs}},
+  {{...avgDsPY}}
 ]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:9}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(1)+'M'}},grid:{{color:gridC}}}},y2}}}}}});
  
 new Chart(document.getElementById('cYTD'),{{type:'line',data:{{labels:['March','April','May','June (MTD)'],datasets:[
   {{label:'Target',data:{_cum_tgt},borderColor:'#C00000',borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'rectRot',pointBackgroundColor:'#C00000',tension:.3,fill:false,yAxisID:'y'}},
   {{label:'Actual',data:{_cum_act},borderColor:AC,borderWidth:2,pointRadius:4,pointStyle:'circle',pointBackgroundColor:AC,tension:.3,fill:false,yAxisID:'y'}},
-  {{...avgDs}}
+  {{...avgDs}},
+  {{...avgDsPY}}
 ]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:9}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(1)+'M'}},grid:{{color:gridC}}}},y2}}}}}});
  
 new Chart(document.getElementById('cMTD'),{{type:'bar',data:{{labels:{_wk_labels_js},datasets:[
