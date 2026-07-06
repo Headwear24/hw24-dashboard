@@ -379,6 +379,9 @@ def build_html(d, report_date=None):
     _acts = {mo: int(round(d['monthly'].get(mo, {}).get('act', 0))) for mo in FISCAL_ORDER}
     _month_acts_js = "{" + ", ".join(f"{mo}:{_acts[mo]}" for mo in FISCAL_ORDER) + "}"
     _months_to_date_js = _json.dumps(YTD_MONTHS + [CUR_MONTH])
+    # YTD range label (e.g. "Mar–Jun") and a table row for each completed YTD month
+    ytd_range = f"{YTD_MONTHS[0]}–{YTD_MONTHS[-1]}" if len(YTD_MONTHS) > 1 else YTD_MONTHS[0]
+    # ytd_month_rows built after tbl_row is defined (below)
     # Data-driven working days elapsed / total (matches national; handles 4- or 5-week months)
     _n_full = max(len(WEEKS_PRESENT) - 1, 0)
     wd_el   = _n_full * 5 + CUR_WEEK_DAYS
@@ -447,6 +450,10 @@ def build_html(d, report_date=None):
                f'<span style="text-align:right;color:{dc}">{"("+fmtN(abs(d_))+")" if d_<0 else "+"+fmtN(d_)}</span>'+\
                f'<span style="text-align:right;color:{dc}">{"("+str(abs(round(p_,1)))+"%" if p_<0 else "+"+str(round(p_,1))+"%"}</span>'+\
                f'{avg_cell}</div>'
+ 
+    ytd_month_rows = "\n".join(
+        tbl_row(MONTH_FULL.get(mo, mo), m[mo]['act'], m[mo]['tgt'], m[mo]['avg'], indent=True)
+        for mo in YTD_MONTHS)
  
     def sp_rows(sp_ser, sp26_ser, max_=8):
         mx=max(list(sp_ser.values())+[v for v in sp26_ser.values()]) if len(sp_ser) else 1
@@ -718,15 +725,13 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <div class="section-hdr" style="margin-top:14px">Period Performance</div>
 <div style="margin:0 14px">
 <div class="tbl-hdr" style="grid-template-columns:1.9fr 1.1fr 1.1fr 1fr .9fr 1fr"><span>Period</span><span style="text-align:right">Actual</span><span style="text-align:right">Target</span><span style="text-align:right">Delta</span><span style="text-align:right">% Delta</span><span style="text-align:right">Avg Unit Price</span></div>
-{tbl_row("YTD Turnover (Mar–May)", d['ytd_act'], d['tgt_ytd'], ytd_avg_price, bold=True)}
-{tbl_row("March",   mar['act'], mar['tgt'], mar['avg'],  indent=True)}
-{tbl_row("April",   apr['act'], apr['tgt'], apr['avg'],  indent=True)}
-{tbl_row("May",     may_['act'],may_['tgt'],may_['avg'], indent=True)}
+{tbl_row(f"YTD Turnover ({ytd_range})", d['ytd_act'], d['tgt_ytd'], ytd_avg_price, bold=True)}
+{ytd_month_rows}
 {tbl_row(f"MTD {CM} ({rmtd_span})", d['jun_act'], mtd_tgt, jun_avg_price, bold=True)}
 {rweek_rows}
 {tbl_row(f"Total incl. {CM} MTD", d['total_rev'], total_tgt, tot_avg_price, total=True)}
 <div class="bold-row" style="display:grid;grid-template-columns:1.9fr 1.1fr 1.1fr 1fr .9fr 1fr;font-size:11px;padding:6px 12px;gap:8px;border-bottom:1px solid #f0f0f0;height:8px"></div>
-{tbl_row("YTD Units (Mar–May)", ytd_units_act, ytd_units_tgt, bold=True)}
+{tbl_row(f"YTD Units ({ytd_range})", ytd_units_act, ytd_units_tgt, bold=True)}
 {tbl_row(f"MTD Units ({CM} {rwk_short})", jun_units_act, jun_units_tgt, indent=True)}
 {tbl_row(f"Total Units incl. {CM}", tot_units_act, tot_units_tgt, total=True)}
 </div>
@@ -1169,12 +1174,12 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
         r=mrev(df,p); u=munit(df,p); return r/u if u else 0
  
     mar_act=mrev(r27,'Mar'); apr_act=mrev(r27,'Apr'); may_act=mrev(r27,'May'); jun_act=mrev(r27,CUR_MONTH)
-    mar_py =mrev(r26,'Mar'); apr_py =mrev(r26,'Apr'); may_py =mrev(r26,'May'); jun_py =mrev(r26,'Jun')
-    mar_avg=mavg(r27,'Mar'); apr_avg=mavg(r27,'Apr'); may_avg=mavg(r27,'May'); jun_avg=mavg(r27,'Jun')
-    mar_avg_py=mavg(r26,'Mar'); apr_avg_py=mavg(r26,'Apr'); may_avg_py=mavg(r26,'May'); jun_avg_py=mavg(r26,'Jun')
+    mar_py =mrev(r26,'Mar'); apr_py =mrev(r26,'Apr'); may_py =mrev(r26,'May'); jun_py =mrev(r26,CUR_MONTH)
+    mar_avg=mavg(r27,'Mar'); apr_avg=mavg(r27,'Apr'); may_avg=mavg(r27,'May'); jun_avg=mavg(r27,CUR_MONTH)
+    mar_avg_py=mavg(r26,'Mar'); apr_avg_py=mavg(r26,'Apr'); may_avg_py=mavg(r26,'May'); jun_avg_py=mavg(r26,CUR_MONTH)
  
-    ytd_act = mar_act+apr_act+may_act
-    ytd_py  = mar_py+apr_py+may_py
+    ytd_act = sum(mrev(r27, mo) for mo in YTD_MONTHS)
+    ytd_py  = sum(mrev(r26, mo) for mo in YTD_MONTHS)
  
     # ── Targets ────────────────────────────────────────────────────────────────
     mar_tgt=round(mar_py*UPLIFT); apr_tgt=round(apr_py*UPLIFT); may_tgt=round(may_py*UPLIFT)
@@ -1182,7 +1187,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     weekly_tgt=round(jun_tgt_full/TOTAL_WEEKS)
     w1_tgt=weekly_tgt; w2_tgt=round(weekly_tgt*w2_frac)
     jun_tgt_pro=w1_tgt+w2_tgt
-    ytd_tgt=mar_tgt+apr_tgt+may_tgt
+    ytd_tgt=sum(round(mrev(r26, mo)*UPLIFT) for mo in YTD_MONTHS)
  
     w1_act=float(r27_jun[r27_jun['Week']=='Week 1']['Line Revenue'].sum())
     w2_act=float(r27_jun[r27_jun['Week']=='Week 2']['Line Revenue'].sum())
@@ -1498,6 +1503,16 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     mth_tgts=f"Mar:{mar_tgt},Apr:{apr_tgt},May:{may_tgt},Jun:{jun_tgt_full},Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}"
     _months_to_date_js = _json.dumps(YTD_MONTHS + [CUR_MONTH])
     CM = MONTH_FULL.get(CUR_MONTH, CUR_MONTH)
+    # YTD range label + a row per completed YTD month (data-driven)
+    ytd_range = f"{YTD_MONTHS[0]}–{YTD_MONTHS[-1]}" if len(YTD_MONTHS) > 1 else YTD_MONTHS[0]
+    ytd_range_uc = ytd_range.upper()
+    cm_uc = CUR_MONTH.upper()
+    nat_ytd_month_rows = "\n".join(
+        tbl_row(MONTH_FULL.get(mo, mo), int(round(mrev(r27, mo))),
+                round(mrev(r26, mo)*UPLIFT), mavg(r27, mo), indent=True)
+        for mo in YTD_MONTHS)
+    _ytd_qty = float(r27_ytd['Line Inv Qty'].sum())
+    ytd_avg_disp = float(r27_ytd['Line Revenue'].sum()/_ytd_qty) if _ytd_qty else 0
     _first_full = MONTH_FULL.get(FISCAL_ORDER[0], 'March')
     date_range = f"{_first_full} 2026 – {CM} 2026"
     chart_labels_js = str([MONTH_FULL.get(mo, mo) for mo in YTD_MONTHS] + [f"{CM} (MTD)"])
@@ -1654,14 +1669,12 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <div class="section-hdr">Period Performance</div>
 <div style="margin:0 14px">
 <div class="tbl-hdr" style="grid-template-columns:1.9fr 1.1fr 1.1fr 1fr .9fr 1fr"><span>Period</span><span style="text-align:right">Actual</span><span style="text-align:right">Target</span><span style="text-align:right">Delta</span><span style="text-align:right">% Delta</span><span style="text-align:right">Avg Unit Price</span></div>
-{tbl_row("YTD Turnover (Mar–May)", int(ytd_act), ytd_tgt, mar_avg, bold=True)}
-{tbl_row("March",   int(mar_act), mar_tgt, mar_avg, indent=True)}
-{tbl_row("April",   int(apr_act), apr_tgt, apr_avg, indent=True)}
-{tbl_row("May",     int(may_act), may_tgt, may_avg, indent=True)}
+{tbl_row(f"YTD Turnover ({ytd_range})", int(ytd_act), ytd_tgt, ytd_avg_disp, bold=True)}
+{nat_ytd_month_rows}
 {tbl_row(f"MTD {CM} ({mtd_week_span})", int(jun_act), jun_tgt_pro, jun_avg, bold=True)}
 {nat_week_rows}
 {tbl_row(f"Total incl. {CM} MTD", int(total_rev), ytd_tgt+jun_tgt_pro, avg_price, total=True)}
-{tbl_row("YTD Units (Mar–May)", ytd_u_act, ytd_u_tgt, bold=True)}
+{tbl_row(f"YTD Units ({ytd_range})", ytd_u_act, ytd_u_tgt, bold=True)}
 {tbl_row(f"MTD Units ({CM})", jun_u_act, jun_u_tgt, indent=True)}
 {tbl_row("Total Units", int(total_units), tot_u_tgt, total=True)}
 </div>
@@ -1669,14 +1682,14 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <!-- Charts -->
 <div class="chart-pair">
   <div class="chart-box">
-    <div class="chart-title">YTD CUMULATIVE ACTUAL vs PY (MAR–JUN, JUN PRO-RATED)</div>
+    <div class="chart-title">YTD CUMULATIVE ACTUAL vs PY ({ytd_range_uc} ACTUAL, {cm_uc} MTD)</div>
     <div style="display:flex;gap:10px;justify-content:center;margin-bottom:6px;font-size:9px;color:#666">
       <span>── Actual &nbsp;</span><span style="border-top:2px dashed #888780;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span>&nbsp;Prior Year &nbsp;</span><span style="border-top:1.5px dotted #888780;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span style="color:#888780">&nbsp;Avg Price &nbsp;</span><span style="border-top:1.5px dotted #B9A36B;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span style="color:#B9A36B">&nbsp;Avg Price PY</span>
     </div>
     <div style="position:relative;height:190px"><canvas id="cPY"></canvas></div>
   </div>
   <div class="chart-box">
-    <div class="chart-title">YTD CUMULATIVE ACTUAL vs TARGET (MAR–JUN, JUN PRO-RATED)</div>
+    <div class="chart-title">YTD CUMULATIVE ACTUAL vs TARGET ({ytd_range_uc} ACTUAL, {cm_uc} MTD)</div>
     <div style="display:flex;gap:10px;justify-content:center;margin-bottom:6px;font-size:9px;color:#666">
       <span style="border-top:2px dashed #C00000;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span>&nbsp;Target &nbsp;</span><span>── Actual &nbsp;</span><span style="border-top:1.5px dotted #888780;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span style="color:#888780">&nbsp;Avg Price &nbsp;</span><span style="border-top:1.5px dotted #B9A36B;display:inline-block;width:18px;height:0;vertical-align:middle"></span><span style="color:#B9A36B">&nbsp;Avg Price PY</span>
     </div>
@@ -1685,7 +1698,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 </div>
  
 <!-- National Performance YTD -->
-<div class="section-hdr">National Performance by Region — YTD (Mar–Jun, Jun pro-rated) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">Targets = AFS26 ×1.19</span></div>
+<div class="section-hdr">National Performance by Region — YTD ({ytd_range} actual, {CM} MTD) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">Targets = AFS26 ×1.19</span></div>
 <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:8px 14px 0">{region_cards()}</div>
  
 <!-- MTD -->
