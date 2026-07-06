@@ -303,11 +303,18 @@ def calc(region):
     valid_avg=avg_m[avg_m['cy_avg']>=5.0]
     top_avg=valid_avg.nlargest(min(8,len(valid_avg)),'cy_avg'); bot_avg=valid_avg.nsmallest(min(8,len(valid_avg)),'cy_avg')
     _mtd_list = YTD_MONTHS + [CUR_MONTH]; _nms = len(_mtd_list)
+    # Data-driven pro-rating factor for the current (partial) month
+    _wd_el = (len(WEEKS_PRESENT)-1)*5 + CUR_WEEK_DAYS
+    _wd_tot = TOTAL_WEEKS*5
+    _pro_rat = _wd_el/_wd_tot if _wd_tot else 0
     cum_act=[0]*_nms; cum_tgt=[0]*_nms; cum_py=[0]*_nms; ra=rt=rp=0
     for i,p1 in enumerate(_mtd_list):
-        ra+=monthly[p1]['act']; rt+=monthly[p1]['tgt']
+        ra+=monthly[p1]['act']
         pm=afs26[afs26['Region']==region][afs26['Period1']==p1]['Line Revenue'].sum()
-        if p1==CUR_MONTH: pm*=WD_PER
+        if p1==CUR_MONTH:
+            rt+=round(pm*UPLIFT*_pro_rat); pm*=_pro_rat
+        else:
+            rt+=round(pm*UPLIFT)
         rp+=pm; cum_act[i]=int(round(ra)); cum_tgt[i]=int(round(rt)); cum_py[i]=int(round(rp))
     # Avg unit prices for period table
     r27_ytd2 = r27[r27['Period1'].isin(YTD_MONTHS)]
@@ -381,6 +388,7 @@ def build_html(d, report_date=None):
     _months_to_date_js = _json.dumps(YTD_MONTHS + [CUR_MONTH])
     # YTD range label (e.g. "Mar–Jun") and a table row for each completed YTD month
     ytd_range = f"{YTD_MONTHS[0]}–{YTD_MONTHS[-1]}" if len(YTD_MONTHS) > 1 else YTD_MONTHS[0]
+    ytd_range_uc = ytd_range.upper(); cm_uc = CUR_MONTH.upper()
     # ytd_month_rows built after tbl_row is defined (below)
     # Data-driven working days elapsed / total (matches national; handles 4- or 5-week months)
     _n_full = max(len(WEEKS_PRESENT) - 1, 0)
@@ -740,7 +748,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
  
 <div class="chart-pair">
   <div class="chart-box">
-    <div class="chart-title">CUMULATIVE ACTUAL vs PY (MAR–JUN)</div>
+    <div class="chart-title">CUMULATIVE ACTUAL vs PY ({ytd_range_uc} ACTUAL, {cm_uc} MTD)</div>
     <div class="leg" style="display:flex;gap:10px;justify-content:center;margin-bottom:6px;font-size:9px;color:#666;flex-wrap:wrap">
       <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:2px;background:{c}"></span>Actual</span>
       <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #888780"></span>Prior Year</span>
@@ -750,7 +758,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
     <div style="position:relative;height:190px"><canvas id="cPY"></canvas></div>
   </div>
   <div class="chart-box">
-    <div class="chart-title">CUMULATIVE ACTUAL vs TARGET (MAR–JUN)</div>
+    <div class="chart-title">CUMULATIVE ACTUAL vs TARGET ({ytd_range_uc} ACTUAL, {cm_uc} MTD)</div>
     <div class="leg" style="display:flex;gap:10px;justify-content:center;margin-bottom:6px;font-size:9px;color:#666;flex-wrap:wrap">
       <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:0;border-top:2px dashed #C00000"></span>Target</span>
       <span style="display:flex;align-items:center;gap:3px"><span style="display:inline-block;width:18px;height:2px;background:{c}"></span>Actual</span>
@@ -761,7 +769,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   </div>
 </div>
  
-<div class="section-hdr" style="margin-top:14px">Sub-Region Breakdown — YTD (Mar–Jun)</div>
+<div class="section-hdr" style="margin-top:14px">Sub-Region Breakdown — YTD ({ytd_range})</div>
 <div style="display:grid;{sub_cols};gap:10px;margin:8px 14px 0">{sub_html}</div>
  
 <div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden" id="ins2-block"></div>
@@ -770,12 +778,12 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <div class="mtd-split">
   <div class="loc-tbl-wrap" id="mtd-tbl-wrap">
     <div class="loc-tbl-hdr" style="grid-template-columns:1.6fr .95fr .95fr .8fr .7fr">
-      <span>Province</span><span style="text-align:right">MTD Actual</span><span style="text-align:right">Jun Target</span><span style="text-align:right">Delta</span><span style="text-align:right">% Delta</span>
+      <span>Province</span><span style="text-align:right">MTD Actual</span><span style="text-align:right">{CM} Target</span><span style="text-align:right">Delta</span><span style="text-align:right">% Delta</span>
     </div>
     <div id="mtd-loc-tbl"></div>
   </div>
   <div class="mtd-chart-wrap" id="mtd-chart-wrap">
-    <div class="mtd-chart-title">MTD ACTUAL VS TARGET REVENUE — JUNE 2026</div>
+    <div class="mtd-chart-title">MTD ACTUAL VS TARGET REVENUE — {cm_uc} 2026</div>
     <div class="mtd-leg">
       <span><span style="display:inline-block;width:12px;height:12px;background:#22A548;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Actual R</span>
       <span><span style="display:inline-block;width:12px;height:12px;background:#8B0000;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Weekly Target</span>
@@ -995,7 +1003,7 @@ const insights = [
     title: ytdOk
       ? `YTD Revenue Ahead of Target — +R${{Math.abs(ytdDelta/1e6).toFixed(2)}}M`
       : `YTD Revenue Shortfall — R${{Math.abs(ytdDelta/1e6).toFixed(2)}}M Behind Target`,
-    body: `Region tracking <strong>R${{(ytdAct/1e6).toFixed(2)}}M YTD (Mar–May)</strong> vs target <strong>R${{(ytdTgt/1e6).toFixed(2)}}M</strong> — ` +
+    body: `Region tracking <strong>R${{(ytdAct/1e6).toFixed(2)}}M YTD ({ytd_range})</strong> vs target <strong>R${{(ytdTgt/1e6).toFixed(2)}}M</strong> — ` +
       (ytdOk ? `<strong style="color:${{posCol}}">+${{ytdPct}}% ahead</strong>. Strong regional performance with consistent monthly delivery.`
              : `<strong style="color:${{negCol}}">(${{ytdPct}}%) behind</strong>. Requires focused recovery to close the gap before year-end.`),
     stats: [
@@ -1295,9 +1303,22 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
             for _,r in sp27a[sp27a['py']>=100000].nsmallest(5,'Line Revenue').iterrows()]
  
     # ── Cumulative chart data ──────────────────────────────────────────────────
-    cum_act=[int(mar_act), int(mar_act+apr_act), int(mar_act+apr_act+may_act), int(total_rev)]
-    cum_tgt=[mar_tgt, mar_tgt+apr_tgt, mar_tgt+apr_tgt+may_tgt, mar_tgt+apr_tgt+may_tgt+round(jun_py*UPLIFT*pro_rat)]
-    cum_py =[int(mar_py), int(mar_py+apr_py), int(mar_py+apr_py+may_py), int(mar_py+apr_py+may_py+jun_py*pro_rat)]
+    # Completed YTD months accumulate at full value; the current (partial) month is
+    # added PRO-RATED (MTD actual, and target × working-days-elapsed/total) so the
+    # final point is a like-for-like MTD comparison, not partial-vs-full-month.
+    _mtd_c = YTD_MONTHS + [CUR_MONTH]
+    cum_act=[]; cum_tgt=[]; cum_py=[]; _ra=_rt=_rp=0
+    for mo in _mtd_c:
+        a = mrev(r27, mo)
+        pyv = mrev(r26, mo)
+        if mo == CUR_MONTH:
+            # current month: actual is MTD as-is; target & PY pro-rated to elapsed days
+            t = round(pyv*UPLIFT*pro_rat)
+            pyv = pyv*pro_rat
+        else:
+            t = round(pyv*UPLIFT)
+        _ra+=a; _rt+=t; _rp+=pyv
+        cum_act.append(int(round(_ra))); cum_tgt.append(int(round(_rt))); cum_py.append(int(round(_rp)))
  
     # ── Helper formatters ──────────────────────────────────────────────────────
     def fmtN(v): return f"{int(v):,}"
@@ -1560,8 +1581,9 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
         bot_avg_r['prov'] = bot_avg['prov'].values
  
     # ── Pre-compute all JS data strings (avoids f-string brace confusion) ────
-    _avgs    = [round(mar_avg,2), round(apr_avg,2), round(may_avg,2), round(jun_avg,2)]
-    _avgs_py = [round(mar_avg_py,2), round(apr_avg_py,2), round(may_avg_py,2), round(jun_avg_py,2)]
+    _mtd = YTD_MONTHS + [CUR_MONTH]
+    _avgs    = [round(mavg(r27, mo), 2) for mo in _mtd]
+    _avgs_py = [round(mavg(r26, mo), 2) for mo in _mtd]
     _valid_a = [v for v in (_avgs+_avgs_py) if v>0]
     _y2_min  = max(0, round(min(_valid_a)/10)*10 - 10) if _valid_a else 0
     _y2_max  = round(max(_valid_a)/10)*10 + 20         if _valid_a else 100
@@ -1706,12 +1728,12 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:8px 14px 0;align-items:stretch">
   <div>
     <div style="display:grid;grid-template-columns:1.6fr .95fr .95fr .8fr .7fr;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;padding:7px 8px;gap:4px;border-radius:4px 4px 0 0">
-      <span>Province</span><span style="text-align:right">MTD Actual</span><span style="text-align:right">Jun Target</span><span style="text-align:right">Delta</span><span style="text-align:right">% Delta</span>
+      <span>Province</span><span style="text-align:right">MTD Actual</span><span style="text-align:right">{CM} Target</span><span style="text-align:right">Delta</span><span style="text-align:right">% Delta</span>
     </div>
     {mtd_rows()}
   </div>
   <div style="display:flex;flex-direction:column;padding:10px;border:1px solid #e0e0e0;border-radius:6px;background:#fff">
-    <div style="font-size:12px;font-weight:700;text-align:center;color:#1F3864;margin-bottom:8px">MTD ACTUAL VS TARGET — JUNE 2026</div>
+    <div style="font-size:12px;font-weight:700;text-align:center;color:#1F3864;margin-bottom:8px">MTD ACTUAL VS TARGET — {cm_uc} 2026</div>
     <div style="flex:1;position:relative;min-height:160px"><canvas id="cMTD"></canvas></div>
   </div>
 </div>
