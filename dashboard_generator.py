@@ -1,4 +1,4 @@
-     import pandas as pd, os, json
+import pandas as pd, os, json
  
 # ── Chart.js: embed inline so dashboards work offline / behind firewalls / as PDFs ──
 def _chartjs_tag():
