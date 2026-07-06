@@ -14,6 +14,7 @@ CHARTJS_TAG = _chartjs_tag()
  
 LO_WINDOWS = []            # [(label, start, end), ...]
 REPORT_DATE = None         # data-derived report date (latest invoice date)
+REPORT_YEAR = 2026         # data-derived calendar year of the report date
  
 # ── Size codes for item consolidation. EDIT THIS LIST to add sizes. ──
 # Items identical except for a size token are merged (revenue summed).
@@ -196,7 +197,7 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
         WEEK_DAYS[w] = int(days) if days else 5
     CUR_WEEK_LABEL = WEEKS_PRESENT[-1]
     CUR_WEEK_DAYS = WEEK_DAYS.get(CUR_WEEK_LABEL, 5)
-    global TOTAL_WEEKS, REPORT_DATE
+    global TOTAL_WEEKS, REPORT_DATE, REPORT_YEAR
     # --- Report date & large-order windows from the latest invoice date ---
     today_dt = pd.to_datetime(afs27['Inv Dt'], errors='coerce').max()
     # Total weeks in the current accounting month (4 or 5) — from the calendar rule
@@ -206,6 +207,7 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     if pd.notna(today_dt):
         # report date = latest invoice date in the data (platform-independent formatting)
         REPORT_DATE = f"{today_dt.day} {today_dt.strftime('%b %Y')}"
+        REPORT_YEAR = int(today_dt.year)
         base = today_dt - pd.DateOffset(years=1)
         m1s = base + pd.Timedelta(days=1)
         m1e = base + pd.DateOffset(months=1)
@@ -369,7 +371,6 @@ def calc(region):
                 cum_act=cum_act,cum_tgt=cum_tgt,cum_py=cum_py)
  
 REG_COLS={'Gauteng':'#185FA5','KZN':'#ED7D31','Western Cape':'#375623','Eastern Cape':'#843C0C','International':'#444444'}
-MONTH_LABELS={'Mar':'March','Apr':'April','May':'May','Jun':'June'}
  
 def build_html(d, report_date=None):
     import datetime
@@ -379,7 +380,7 @@ def build_html(d, report_date=None):
     # Dynamic month display strings (current reporting month, data-driven)
     CM = MONTH_FULL.get(CUR_MONTH, CUR_MONTH)                       # e.g. 'July'
     _first_full = MONTH_FULL.get(FISCAL_ORDER[0], 'March')          # 'March'
-    date_range = f"{_first_full} 2026 – {CM} 2026"
+    date_range = f"{_first_full} {REPORT_YEAR} – {CM} {REPORT_YEAR}"
     chart_labels_js = str(d.get('chart_month_labels', ['March','April','May',f'{CM} (MTD)']))
     # JS metric-table inputs: actuals per month (data-driven) + list of months with data
     import json as _json
@@ -612,7 +613,6 @@ def build_html(d, report_date=None):
     top_avg_rows   = avg_rows(d['top_avg'].rename(columns={'Cust Name': '_1','py_rev':'py_r'}), True)
     bot_avg_rows   = avg_rows(d['bot_avg'].rename(columns={'Cust Name': '_1','py_rev':'py_r'}), False)
  
-    mar=m['Mar']; apr=m['Apr']; may_=m['May']; jun=m['Jun']
     ytd_act_d=d['ytd_act']-d['tgt_ytd']; ytd_pct_v=ytd_act_d/d['tgt_ytd']*100 if d['tgt_ytd'] else 0
     w1d=d['w1_act']-d['w1_tgt']; w2d=d['w2_act']-d['w2_tgt']
     mtd_act=d['jun_act']; mtd_tgt=jun_mtd_tgt_dyn; mtd_d=mtd_act-mtd_tgt
@@ -774,7 +774,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
  
 <div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden" id="ins2-block"></div>
  
-<div class="section-hdr" style="margin-top:14px">National Performance by Region — MTD ({CM} 2026 {rwk_short}) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">{rwk_detail}</span></div>
+<div class="section-hdr" style="margin-top:14px">National Performance by Region — MTD ({CM} {REPORT_YEAR} {rwk_short}) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">{rwk_detail}</span></div>
 <div class="mtd-split">
   <div class="loc-tbl-wrap" id="mtd-tbl-wrap">
     <div class="loc-tbl-hdr" style="grid-template-columns:1.6fr .95fr .95fr .8fr .7fr">
@@ -783,7 +783,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
     <div id="mtd-loc-tbl"></div>
   </div>
   <div class="mtd-chart-wrap" id="mtd-chart-wrap">
-    <div class="mtd-chart-title">MTD ACTUAL VS TARGET REVENUE — {cm_uc} 2026</div>
+    <div class="mtd-chart-title">MTD ACTUAL VS TARGET REVENUE — {cm_uc} {REPORT_YEAR}</div>
     <div class="mtd-leg">
       <span><span style="display:inline-block;width:12px;height:12px;background:#22A548;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Actual R</span>
       <span><span style="display:inline-block;width:12px;height:12px;background:#8B0000;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Weekly Target</span>
@@ -1217,7 +1217,6 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     nov_tgt=rm('Nov'); dec_tgt=rm('Dec'); jan_tgt=rm('Jan'); feb_tgt=rm('Feb')
  
     # ── Units ──────────────────────────────────────────────────────────────────
-    ytd_u_act=int(munit(r27_ytd.assign(**{}),'Mar')+munit(r27_ytd,'Apr')+munit(r27_ytd,'May'))
     ytd_u_act=int(r27_ytd['Line Inv Qty'].sum())
     ytd_u_py =int(r26_ytd['Line Inv Qty'].sum())
     ytd_u_tgt=round(ytd_u_py*UPLIFT)
@@ -1535,7 +1534,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     _ytd_qty = float(r27_ytd['Line Inv Qty'].sum())
     ytd_avg_disp = float(r27_ytd['Line Revenue'].sum()/_ytd_qty) if _ytd_qty else 0
     _first_full = MONTH_FULL.get(FISCAL_ORDER[0], 'March')
-    date_range = f"{_first_full} 2026 – {CM} 2026"
+    date_range = f"{_first_full} {REPORT_YEAR} – {CM} {REPORT_YEAR}"
     chart_labels_js = str([MONTH_FULL.get(mo, mo) for mo in YTD_MONTHS] + [f"{CM} (MTD)"])
  
     GREY='#888780'; AC='#1D9E75'
@@ -1614,7 +1613,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     _mth_acts = "{" + ",".join(f"{mo}:{_nat_acts[mo]}" for mo in FISCAL_ORDER) + "}"
     _mth_tgts = "{" + f"Mar:{mar_tgt},Apr:{apr_tgt},May:{may_tgt},Jun:{jun_tgt_full},Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}" + "}"
  
-    _daily = round(jun_tgt_full/20)
+    _daily = round(jun_tgt_full/(TOTAL_WEEKS*5))
  
     # ── Assemble HTML ──────────────────────────────────────────────────────────
     html = f"""<!DOCTYPE html>
@@ -1647,7 +1646,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 </head>
 <body><div class="db">
 <div class="title-bar">HW24 GROUP SALES — NATIONAL DASHBOARD</div>
-<div class="sub-bar"><span>{report_date}</span><span>{date_range} &nbsp;|&nbsp; MTD: {CM} 2026 — {week_label} ({days_elapsed} days) &nbsp;|&nbsp; All targets = AFS26 ×1.19</span></div>
+<div class="sub-bar"><span>{report_date}</span><span>{date_range} &nbsp;|&nbsp; MTD: {CM} {REPORT_YEAR} — {week_label} ({days_elapsed} days) &nbsp;|&nbsp; All targets = AFS26 ×1.19</span></div>
  
 <div class="kpi-row">
   <div class="kpi"><div class="kpi-label" style="background:#2E75B6">Total Turnover</div><div class="kpi-val" style="color:#1F3864">R{total_rev:,.0f}</div></div>
@@ -1724,7 +1723,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:8px 14px 0">{region_cards()}</div>
  
 <!-- MTD -->
-<div class="section-hdr" style="margin-top:14px">National Performance by Region — MTD ({CM} 2026 {week_label}) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">W1={fmtK(w1_tgt)} · W2={fmtK(w2_tgt)} ({days_elapsed}/5 days) · Daily={fmtK(round(jun_tgt_full/20))}</span></div>
+<div class="section-hdr" style="margin-top:14px">National Performance by Region — MTD ({CM} {REPORT_YEAR} {week_label}) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">W1={fmtK(w1_tgt)} · W2={fmtK(w2_tgt)} ({days_elapsed}/5 days) · Daily={fmtK(round(jun_tgt_full/(TOTAL_WEEKS*5)))}</span></div>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:8px 14px 0;align-items:stretch">
   <div>
     <div style="display:grid;grid-template-columns:1.6fr .95fr .95fr .8fr .7fr;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;padding:7px 8px;gap:4px;border-radius:4px 4px 0 0">
@@ -1733,7 +1732,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
     {mtd_rows()}
   </div>
   <div style="display:flex;flex-direction:column;padding:10px;border:1px solid #e0e0e0;border-radius:6px;background:#fff">
-    <div style="font-size:12px;font-weight:700;text-align:center;color:#1F3864;margin-bottom:8px">MTD ACTUAL VS TARGET — {cm_uc} 2026</div>
+    <div style="font-size:12px;font-weight:700;text-align:center;color:#1F3864;margin-bottom:8px">MTD ACTUAL VS TARGET — {cm_uc} {REPORT_YEAR}</div>
     <div style="flex:1;position:relative;min-height:160px"><canvas id="cMTD"></canvas></div>
   </div>
 </div>
