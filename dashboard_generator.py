@@ -123,6 +123,28 @@ df = afs27 = afs26 = None
 LO_START = LO_END = None
 UPLIFT=1.19; WD_PER=9/20; prov_col='Province Orginal'; sp_col='Sales Person Use'
 WEEKS_PRESENT=['Week 1','Week 2']; WEEK_DAYS={}; CUR_WEEK_LABEL='Week 2'; CUR_WEEK_DAYS=4; CUR_MONTH='Jun'
+TOTAL_WEEKS=4   # total Week-of-Month buckets in the current month (4 or 5). Set in initialise().
+ 
+def weeks_in_month(year, month):
+    """HW24 accounting weeks-in-month rule (validated against the 2026/27 schedule).
+    A week is Mon-Sun. For each week overlapping the month, count its working days
+    (Mon-Fri) that fall inside the month: >=3 working days -> the week belongs to
+    this month; <=2 -> it rolls into the adjacent month. Returns 4 or 5.
+    Working days are Monday-Friday. This is calendar-based (no data dependency)."""
+    import datetime, calendar
+    first = datetime.date(year, month, 1)
+    last  = datetime.date(year, month, calendar.monthrange(year, month)[1])
+    monday = first - datetime.timedelta(days=first.weekday())  # Monday of week containing the 1st
+    count = 0
+    cur = monday
+    while cur <= last:
+        wd = sum(1 for i in range(5)
+                 if (cur+datetime.timedelta(days=i)).month == month
+                 and (cur+datetime.timedelta(days=i)).year == year)
+        if wd >= 3:
+            count += 1
+        cur += datetime.timedelta(days=7)
+    return count
  
 def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     """Load data file and set global config. Call before calc()."""
@@ -163,9 +185,13 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
         WEEK_DAYS[w] = int(days) if days else 5
     CUR_WEEK_LABEL = WEEKS_PRESENT[-1]
     CUR_WEEK_DAYS = WEEK_DAYS.get(CUR_WEEK_LABEL, 5)
-    # --- Large-order watch: two month-ahead windows, prior year ---
+    global TOTAL_WEEKS, REPORT_DATE
+    # --- Report date & large-order windows from the latest invoice date ---
     today_dt = pd.to_datetime(afs27['Inv Dt'], errors='coerce').max()
-    global REPORT_DATE
+    # Total weeks in the current accounting month (4 or 5) — from the calendar rule
+    # (validated against the 2026/27 accounting schedule; no data dependency).
+    if pd.notna(today_dt):
+        TOTAL_WEEKS = weeks_in_month(int(today_dt.year), int(today_dt.month))
     if pd.notna(today_dt):
         # report date = latest invoice date in the data (platform-independent formatting)
         REPORT_DATE = f"{today_dt.day} {today_dt.strftime('%b %Y')}"
@@ -204,7 +230,7 @@ def calc(region):
     clients=r27['Cust Name'].nunique(); invoices=r27['Inv no'].nunique()
     py_ytd=r26y['Line Revenue'].sum(); py_jun=r26j['Line Revenue'].sum()
     tgt_ytd=round(py_ytd*UPLIFT); tgt_jun_full=round(py_jun*UPLIFT)
-    tgt_jun_pro=round(py_jun*UPLIFT*WD_PER); weekly_tgt=round(tgt_jun_full/4)
+    tgt_jun_pro=round(py_jun*UPLIFT*WD_PER); weekly_tgt=round(tgt_jun_full/TOTAL_WEEKS)
     w1_tgt=weekly_tgt; w2_tgt=round(weekly_tgt*4/5)
     ytd_act=r27y['Line Revenue'].sum(); jun_act=r27j['Line Revenue'].sum()
     w1_act=int(r27[(r27['Period1']=='Jun')&(r27['Week']=='Week 1')]['Line Revenue'].sum())
@@ -328,6 +354,10 @@ def build_html(d, report_date=None):
     if report_date is None:
         report_date = REPORT_DATE or datetime.date.today().strftime('%-d %b %Y')
     r=d['region']; c=REG_COLS[r]; m=d['monthly']
+    # Data-driven working days elapsed / total (matches national; handles 4- or 5-week months)
+    _n_full = max(len(WEEKS_PRESENT) - 1, 0)
+    wd_el   = _n_full * 5 + CUR_WEEK_DAYS
+    wd_tot  = TOTAL_WEEKS * 5
     ytd_d=d['ytd_delta']; ytd_p=ytd_d/d['tgt_ytd']*100 if d['tgt_ytd'] else 0
     tgt_mtd=d['w1_tgt']+d['w2_tgt']; mtd_d=d['jun_act']-tgt_mtd
     total_d=d['total_rev']-d['tgt_ytd']-tgt_mtd
@@ -947,9 +977,9 @@ const insights = [
     title: junOk
       ? `June MTD Tracking Ahead — W1+W2 above pro-rated target`
       : `June MTD Behind Pro-Rated Target — Action Required`,
-    body: `June MTD (W1+W2) <strong>R${{(junAct/1e6).toFixed(2)}}M</strong> vs pro-rated target <strong>R${{(junTgt/1e6).toFixed(2)}}M</strong> (7/20 working days). ` +
+    body: `June MTD <strong>R${{(junAct/1e6).toFixed(2)}}M</strong> vs pro-rated target <strong>R${{(junTgt/1e6).toFixed(2)}}M</strong> ({wd_el}/{wd_tot} working days). ` +
       (junOk ? `Region is tracking well in June — maintain current sales momentum.`
-             : `Currently <strong style="color:${{negCol}}">(${{junPct}}%) below</strong> the day-weighted June target. Weekly target R${{(monthTgts['Jun']/4/1e6).toFixed(2)}}M requires focus in remaining weeks.`),
+             : `Currently <strong style="color:${{negCol}}">(${{junPct}}%) below</strong> the day-weighted June target. Weekly target R${{(monthTgts['Jun']/{TOTAL_WEEKS}/1e6).toFixed(2)}}M requires focus in remaining weeks.`),
     stats: [
       {{label:`W1 R${{({w1_act}/1e6).toFixed(2)}}M vs R${{({w1_tgt}/1e6).toFixed(2)}}M`,neg:{str(w1_act<w1_tgt).lower()}}},
       {{label:`W2 R${{({w2_act}/1e6).toFixed(2)}}M vs R${{({w2_tgt}/1e6).toFixed(2)}}M`,neg:{str(w2_act<w2_tgt).lower()}}}
@@ -1095,7 +1125,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     n_weeks_full = len(WEEKS_PRESENT) - 1  # completed weeks before the current partial one
     w2_frac = days_elapsed / 5
     wd_el   = n_weeks_full * 5 + days_elapsed
-    wd_tot  = 20
+    wd_tot  = TOTAL_WEEKS * 5
     pro_rat = wd_el / wd_tot
  
     # ── National KPIs ──────────────────────────────────────────────────────────
@@ -1122,7 +1152,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     # ── Targets ────────────────────────────────────────────────────────────────
     mar_tgt=round(mar_py*UPLIFT); apr_tgt=round(apr_py*UPLIFT); may_tgt=round(may_py*UPLIFT)
     jun_tgt_full=round(jun_py*UPLIFT)
-    weekly_tgt=round(jun_tgt_full/4)
+    weekly_tgt=round(jun_tgt_full/TOTAL_WEEKS)
     w1_tgt=weekly_tgt; w2_tgt=round(weekly_tgt*w2_frac)
     jun_tgt_pro=w1_tgt+w2_tgt
     ytd_tgt=mar_tgt+apr_tgt+may_tgt
