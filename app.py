@@ -1,6 +1,12 @@
 """
 HW24 Sales Dashboard Generator — Streamlit App
 Generates all 6 dashboards (1 national + 5 regional) from a single data upload.
+ 
+The dashboard generator is fully DATA-DRIVEN: it detects the reporting month,
+the weeks present, the working days elapsed, and whether the month has 4 or 5
+weeks directly from the uploaded file. This app therefore does not ask the user
+to set those manually — the sidebar reflects what the generator derived after
+the file is read.
 """
 import streamlit as st
 import pandas as pd
@@ -18,6 +24,8 @@ st.markdown("""
 .step-num{background:#1F3864;color:white;border-radius:50%;width:24px;height:24px;
   display:flex;align-items:center;justify-content:center;font-size:12px;
   font-weight:600;flex-shrink:0;margin-top:1px}
+.derived{background:#eef3fa;border:1px solid #b7cce8;border-radius:8px;
+  padding:10px 14px;font-size:13px;color:#1F3864;margin:8px 0}
 </style>
 """, unsafe_allow_html=True)
  
@@ -25,35 +33,20 @@ st.markdown("""
 with st.sidebar:
     st.markdown("## ⚙️ Report settings")
     st.markdown("---")
-    month = st.selectbox("Month", [
-        "June 2026","July 2026","August 2026","September 2026",
-        "October 2026","November 2026","December 2026",
-        "January 2027","February 2027",
-    ])
-    week = st.selectbox("Current week", ["Week 1","Week 2","Week 3","Week 4"])
-    days_elapsed = st.number_input(
-        "Working days elapsed in current week",
-        min_value=1, max_value=5, value=4,
-        help="Mon=1  Tue=2  Wed=3  Thu=4  Fri=5"
-    )
-    week_num   = int(week.split()[1])
-    total_days = (week_num - 1) * 5 + days_elapsed
-    wd_total   = 20
-    wd_per     = total_days / wd_total
-    w2_frac    = days_elapsed / 5
- 
-    st.markdown(f"""
-    **Pro-rating summary**
-    - W{week_num} target = **{w2_frac*100:.0f}%** of weekly ({days_elapsed}/5 days)
-    - MTD = **{total_days}/{wd_total}** working days
-    - Pro-rated factor = **{wd_per:.2f}**
-    """)
+    st.markdown(
+        "<div class='derived'>📈 <strong>Auto-detected from your data</strong><br>"
+        "The generator reads the reporting month, the weeks present, the working "
+        "days elapsed, and whether the month has 4 or 5 weeks directly from the "
+        "uploaded file. Nothing needs to be set here.</div>",
+        unsafe_allow_html=True)
+    # Placeholder that gets filled in after the file is read (see below).
+    sidebar_summary = st.empty()
     st.markdown("---")
     st.markdown("**Target methodology:** All targets = AFS26 × 1.19")
  
 # ── Main ───────────────────────────────────────────────────────────────────────
 st.markdown("# 📊 HW24 Sales Dashboard Generator")
-st.markdown(f"**{month}** · {week} · {days_elapsed} days elapsed · {total_days}/{wd_total} MTD working days")
+st.markdown("Reporting period, weeks and pro-rating are detected automatically from the data.")
 st.markdown("---")
  
 col_steps, col_upload = st.columns([1, 1.4])
@@ -61,9 +54,9 @@ with col_steps:
     st.markdown("#### How it works")
     for num, txt in [
         ("1","Export raw data from your system"),
-        ("2","Set week and days elapsed in the left panel"),
-        ("3","Upload the .xlsx file on the right"),
-        ("4","Click Generate — takes about 45 seconds"),
+        ("2","Upload the .xlsx file on the right"),
+        ("3","Click Generate — takes about 45 seconds"),
+        ("4","Review the auto-detected period in the sidebar"),
         ("5","Download all 6 dashboards or as a single ZIP"),
     ]:
         st.markdown(
@@ -108,18 +101,35 @@ try:
  
     status.markdown("**Reading data file...**")
     progress.progress(20)
-    gen.initialise(tmp_path, wd_per=wd_per, w2_fraction=w2_frac)
+    # Fully data-driven: initialise derives month, weeks, days elapsed and 4/5-week count.
+    gen.initialise(tmp_path)
+ 
+    # ── Show what the generator detected (sidebar reflects the data) ────────────
+    total_weeks = getattr(gen, "TOTAL_WEEKS", 4)
+    cur_week    = getattr(gen, "CUR_WEEK_LABEL", "Week 1")
+    cur_days    = getattr(gen, "CUR_WEEK_DAYS", 5)
+    weeks_seen  = getattr(gen, "WEEKS_PRESENT", [])
+    report_date = getattr(gen, "REPORT_DATE", "")
+    cur_month   = getattr(gen, "CUR_MONTH", "")
+    n_full      = max(len(weeks_seen) - 1, 0)
+    wd_elapsed  = n_full * 5 + cur_days
+    wd_total    = total_weeks * 5
+    pro_factor  = wd_elapsed / wd_total if wd_total else 0
+ 
+    sidebar_summary.markdown(f"""
+**Detected reporting period**
+- Report date: **{report_date}**
+- Month: **{cur_month}** — a **{total_weeks}-week** month
+- Weeks with data: **{len(weeks_seen)}** ({', '.join(weeks_seen) if weeks_seen else '—'})
+- Current week: **{cur_week}** ({cur_days}/5 days)
+- MTD = **{wd_elapsed}/{wd_total}** working days
+- Pro-rated factor = **{pro_factor:.2f}**
+""")
  
     # ── National dashboard ─────────────────────────────────────────────────────
-    import datetime
-    today_str = datetime.date.today().strftime("%-d %b %Y")
     status.markdown("**Building National dashboard...**")
     progress.progress(30)
-    national_html = gen.generate_national(
-        report_date=today_str,
-        week_label=week,
-        days_elapsed=int(days_elapsed)
-    )
+    national_html = gen.generate_national()   # report date & weeks derived from data
  
     # ── Regional dashboards ────────────────────────────────────────────────────
     regions_cfg = [
@@ -142,7 +152,7 @@ try:
  
     os.unlink(tmp_path)
     progress.progress(100)
-    status.markdown("✅ **All 6 dashboards generated!**")
+    status.markdown(f"✅ **All 6 dashboards generated** — {cur_month} ({total_weeks}-week month), report date {report_date}")
  
 except Exception as e:
     st.error(f"❌ Generation failed: {e}")
@@ -192,7 +202,7 @@ zip_buf.seek(0)
 st.download_button(
     label="📦 Download ALL 6 dashboards as ZIP",
     data=zip_buf,
-    file_name=f"HW24_All_Dashboards_{month.replace(' ','_')}.zip",
+    file_name=f"HW24_All_Dashboards_{cur_month}.zip",
     mime="application/zip",
     use_container_width=True,
     type="primary",
@@ -200,5 +210,6 @@ st.download_button(
  
 st.markdown(
     f"<br><div style='text-align:center;color:#888;font-size:12px'>"
-    f"HW24 Group Sales · {month} · {week} · {days_elapsed} days elapsed</div>",
+    f"HW24 Group Sales · {cur_month} · {cur_week} · {cur_days} days in current week · "
+    f"{total_weeks}-week month</div>",
     unsafe_allow_html=True)
