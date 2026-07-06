@@ -1,4 +1,4 @@
-import pandas as pd, os, json
+     import pandas as pd, os, json
  
 # ── Chart.js: embed inline so dashboards work offline / behind firewalls / as PDFs ──
 def _chartjs_tag():
@@ -123,6 +123,11 @@ df = afs27 = afs26 = None
 LO_START = LO_END = None
 UPLIFT=1.19; WD_PER=9/20; prov_col='Province Orginal'; sp_col='Sales Person Use'
 WEEKS_PRESENT=['Week 1','Week 2']; WEEK_DAYS={}; CUR_WEEK_LABEL='Week 2'; CUR_WEEK_DAYS=4; CUR_MONTH='Jun'
+YTD_MONTHS=['Mar','Apr','May']; CUR_MONTH_FULL='June'
+FISCAL_ORDER=['Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb']
+MONTH_FULL={'Mar':'March','Apr':'April','May':'May','Jun':'June','Jul':'July','Aug':'August',
+            'Sep':'September','Sept':'September','Oct':'October','Nov':'November','Dec':'December',
+            'Jan':'January','Feb':'February'}
 TOTAL_WEEKS=4   # total Week-of-Month buckets in the current month (4 or 5). Set in initialise().
  
 def weeks_in_month(year, month):
@@ -150,7 +155,7 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     """Load data file and set global config. Call before calc()."""
     global df, afs27, afs26, UPLIFT, WD_PER, afs26_ytd, afs26_jun
     global sp_lu, branch_dict
-    global WEEKS_PRESENT, WEEK_DAYS, CUR_WEEK_LABEL, CUR_WEEK_DAYS, CUR_MONTH
+    global WEEKS_PRESENT, WEEK_DAYS, CUR_WEEK_LABEL, CUR_WEEK_DAYS, CUR_MONTH, YTD_MONTHS, CUR_MONTH_FULL
     global LO_START, LO_END, LO_WINDOWS
     WD_PER = wd_per
     df = pd.read_excel(filepath, sheet_name='AFS 26 Data', header=0)
@@ -164,13 +169,19 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     afs26 = df[df['AFS']=='AFS26'].copy()
     for d_ in [afs27, afs26]:
         d_['Region'] = d_[prov_col].map(REGION_MAP).fillna('Other')
-    afs26_ytd = afs26[afs26['Period1'].isin(['Mar','Apr','May'])]
-    afs26_jun = afs26[afs26['Period1']=='Jun']
+    # ── Determine the CURRENT reporting month (latest fiscal month with data) ──
+    # Fiscal year runs Mar → Feb. Current month = latest present; YTD = months before it.
+    present = [m for m in FISCAL_ORDER if m in set(afs27['Period1'].dropna())]
+    CUR_MONTH = present[-1] if present else 'Mar'
+    YTD_MONTHS = FISCAL_ORDER[:FISCAL_ORDER.index(CUR_MONTH)]   # completed months before current
+    CUR_MONTH_FULL = MONTH_FULL.get(CUR_MONTH, CUR_MONTH)
+    afs26_ytd = afs26[afs26['Period1'].isin(YTD_MONTHS)]
+    afs26_jun = afs26[afs26['Period1']==CUR_MONTH]   # prior-year CURRENT month (name kept for compat)
     sp_lu = df[['ALYSHA','DURBAN']].dropna().drop_duplicates()
     sp_lu.columns = ['sp','branch']
     sp_lu['branch'] = sp_lu['branch'].str.strip()
     branch_dict.update(dict(zip(sp_lu['sp'], sp_lu['branch'])))
-    # --- Derive the current month and the weeks present in its data ---
+    # --- Derive the weeks present in the current month's data ---
     cur = afs27[afs27['Period1']==CUR_MONTH].copy()
     cur['_dt'] = pd.to_datetime(afs27.loc[cur.index, 'Inv Dt'], errors='coerce')
     def wk_sort(w):
@@ -224,7 +235,7 @@ def fmtN(v): return f"{v:,.0f}"
 def calc(region):
     r27=afs27[afs27['Region']==region]; r26y=afs26_ytd[afs26_ytd['Region']==region]
     r26j=afs26_jun[afs26_jun['Region']==region]
-    r27y=r27[r27['Period1'].isin(['Mar','Apr','May'])]; r27j=r27[r27['Period1']=='Jun']
+    r27y=r27[r27['Period1'].isin(YTD_MONTHS)]; r27j=r27[r27['Period1']==CUR_MONTH]
     total_rev=r27['Line Revenue'].sum(); total_units=r27['Line Inv Qty'].sum()
     avg_price=total_rev/total_units if total_units else 0
     clients=r27['Cust Name'].nunique(); invoices=r27['Inv no'].nunique()
@@ -233,13 +244,13 @@ def calc(region):
     tgt_jun_pro=round(py_jun*UPLIFT*WD_PER); weekly_tgt=round(tgt_jun_full/TOTAL_WEEKS)
     w1_tgt=weekly_tgt; w2_tgt=round(weekly_tgt*4/5)
     ytd_act=r27y['Line Revenue'].sum(); jun_act=r27j['Line Revenue'].sum()
-    w1_act=int(r27[(r27['Period1']=='Jun')&(r27['Week']=='Week 1')]['Line Revenue'].sum())
-    w2_act=int(r27[(r27['Period1']=='Jun')&(r27['Week']=='Week 2')]['Line Revenue'].sum())
-    # --- Dynamic weeks: detect every week present in June data and build per-week act/tgt ---
+    w1_act=int(r27[(r27['Period1']==CUR_MONTH)&(r27['Week']=='Week 1')]['Line Revenue'].sum())
+    w2_act=int(r27[(r27['Period1']==CUR_MONTH)&(r27['Week']=='Week 2')]['Line Revenue'].sum())
+    # --- Dynamic weeks: detect every week present in the current month's data ---
     # Uses the global WEEKS_PRESENT / WEEK_DAYS computed from the data in initialise().
     weeks=[]
     for wlabel in WEEKS_PRESENT:
-        wact=int(r27[(r27['Period1']=='Jun')&(r27['Week']==wlabel)]['Line Revenue'].sum())
+        wact=int(r27[(r27['Period1']==CUR_MONTH)&(r27['Week']==wlabel)]['Line Revenue'].sum())
         ndays=WEEK_DAYS.get(wlabel,5)
         # weekly target prorated by working days actually elapsed in that week (out of 5)
         wtgt=round(weekly_tgt * (min(ndays,5)/5))
@@ -247,11 +258,11 @@ def calc(region):
     week_max=max([w['act'] for w in weeks]+[round(py_jun*UPLIFT/4)]) if weeks else 1
     chart_max=int(max(w1_act, round(py_jun*UPLIFT/4), w2_act, round(py_jun*UPLIFT/4*2/5)) * 1.2) if py_jun>0 else max(w1_act,w2_act,1000)*2
     monthly={}
-    for p1 in ['Mar','Apr','May','Jun']:
+    for p1 in YTD_MONTHS + [CUR_MONTH]:
         md=r27[r27['Period1']==p1]; pd26=afs26[afs26['Region']==region][afs26['Period1']==p1]['Line Revenue'].sum()
         act=md['Line Revenue'].sum(); units=md['Line Inv Qty'].sum()
         avg=act/units if units else 0
-        tgt=round(pd26*UPLIFT*(WD_PER if p1=='Jun' else 1))
+        tgt=round(pd26*UPLIFT*(WD_PER if p1==CUR_MONTH else 1))
         monthly[p1]={'act':act,'tgt':tgt,'avg':avg,'units':units}
     classes=['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN ','OPP']
     prod={}
@@ -291,15 +302,16 @@ def calc(region):
     cy_s['cy_avg']=cy_s['cy_rev']/cy_s['cy_qty']; avg_m=py_s.merge(cy_s,on='Cust Name',how='inner')
     valid_avg=avg_m[avg_m['cy_avg']>=5.0]
     top_avg=valid_avg.nlargest(min(8,len(valid_avg)),'cy_avg'); bot_avg=valid_avg.nsmallest(min(8,len(valid_avg)),'cy_avg')
-    cum_act=[0,0,0,0]; cum_tgt=[0,0,0,0]; cum_py=[0,0,0,0]; ra=rt=rp=0
-    for i,p1 in enumerate(['Mar','Apr','May','Jun']):
+    _mtd_list = YTD_MONTHS + [CUR_MONTH]; _nms = len(_mtd_list)
+    cum_act=[0]*_nms; cum_tgt=[0]*_nms; cum_py=[0]*_nms; ra=rt=rp=0
+    for i,p1 in enumerate(_mtd_list):
         ra+=monthly[p1]['act']; rt+=monthly[p1]['tgt']
         pm=afs26[afs26['Region']==region][afs26['Period1']==p1]['Line Revenue'].sum()
-        if p1=='Jun': pm*=WD_PER
+        if p1==CUR_MONTH: pm*=WD_PER
         rp+=pm; cum_act[i]=int(round(ra)); cum_tgt[i]=int(round(rt)); cum_py[i]=int(round(rp))
     # Avg unit prices for period table
-    r27_ytd2 = r27[r27['Period1'].isin(['Mar','Apr','May'])]
-    r27_jun2 = r27[r27['Period1']=='Jun']
+    r27_ytd2 = r27[r27['Period1'].isin(YTD_MONTHS)]
+    r27_jun2 = r27[r27['Period1']==CUR_MONTH]
     ytd_qty2 = float(r27_ytd2['Line Inv Qty'].sum()); jun_qty2 = float(r27_jun2['Line Inv Qty'].sum())
     ytd_avg_price = float(r27_ytd2['Line Revenue'].sum()/ytd_qty2 if ytd_qty2 else 0)
     jun_avg_price = float(r27_jun2['Line Revenue'].sum()/jun_qty2 if jun_qty2 else 0)
@@ -317,17 +329,19 @@ def calc(region):
  
     # Monthly avg prices for chart secondary axis
     monthly_avg_prices = []
-    for p1 in ['Mar','Apr','May','Jun']:
+    for p1 in _mtd_list:
         md2 = r27[r27['Period1']==p1]
         q2 = md2['Line Inv Qty'].sum()
         monthly_avg_prices.append(float(round(md2['Line Revenue'].sum()/q2, 2)) if q2>0 else 0.0)
     # Prior-year monthly avg prices (AFS26, same region)
     monthly_avg_prices_py = []
     r26reg = afs26[afs26['Region']==region]
-    for p1 in ['Mar','Apr','May','Jun']:
+    for p1 in _mtd_list:
         md3 = r26reg[r26reg['Period1']==p1]
         q3 = md3['Line Inv Qty'].sum()
         monthly_avg_prices_py.append(float(round(md3['Line Revenue'].sum()/q3, 2)) if q3>0 else 0.0)
+    # Chart x-axis labels: full month names, current month tagged (MTD)
+    chart_month_labels = [MONTH_FULL.get(m, m) for m in YTD_MONTHS] + [f"{MONTH_FULL.get(CUR_MONTH,CUR_MONTH)} (MTD)"]
  
     return dict(region=region,total_rev=total_rev,total_units=total_units,avg_price=avg_price,
                 ytd_avg_price=ytd_avg_price,jun_avg_price=jun_avg_price,tot_avg_price=tot_avg_price,
@@ -336,6 +350,7 @@ def calc(region):
                 tot_units_act=tot_units_act,tot_units_tgt=tot_units_tgt,
                 monthly_avg_prices=monthly_avg_prices,
                 monthly_avg_prices_py=monthly_avg_prices_py,
+                chart_month_labels=chart_month_labels,
                 clients=clients,invoices=invoices,ytd_act=ytd_act,tgt_ytd=tgt_ytd,
                 ytd_delta=ytd_act-tgt_ytd,tgt_jun_pro=tgt_jun_pro,tgt_jun_full=tgt_jun_full,
                 weekly_tgt=weekly_tgt,w1_act=w1_act,w1_tgt=w1_tgt,w2_act=w2_act,w2_tgt=w2_tgt,
@@ -354,6 +369,16 @@ def build_html(d, report_date=None):
     if report_date is None:
         report_date = REPORT_DATE or datetime.date.today().strftime('%-d %b %Y')
     r=d['region']; c=REG_COLS[r]; m=d['monthly']
+    # Dynamic month display strings (current reporting month, data-driven)
+    CM = MONTH_FULL.get(CUR_MONTH, CUR_MONTH)                       # e.g. 'July'
+    _first_full = MONTH_FULL.get(FISCAL_ORDER[0], 'March')          # 'March'
+    date_range = f"{_first_full} 2026 – {CM} 2026"
+    chart_labels_js = str(d.get('chart_month_labels', ['March','April','May',f'{CM} (MTD)']))
+    # JS metric-table inputs: actuals per month (data-driven) + list of months with data
+    import json as _json
+    _acts = {mo: int(round(d['monthly'].get(mo, {}).get('act', 0))) for mo in FISCAL_ORDER}
+    _month_acts_js = "{" + ", ".join(f"{mo}:{_acts[mo]}" for mo in FISCAL_ORDER) + "}"
+    _months_to_date_js = _json.dumps(YTD_MONTHS + [CUR_MONTH])
     # Data-driven working days elapsed / total (matches national; handles 4- or 5-week months)
     _n_full = max(len(WEEKS_PRESENT) - 1, 0)
     wd_el   = _n_full * 5 + CUR_WEEK_DAYS
@@ -638,7 +663,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <body>
 <div class="db">
 <div class="title-bar">HW24 {r.upper()} SALES — DASHBOARD</div>
-<div class="sub-bar"><span>{report_date}</span><span>March 2026 – June 2026 &nbsp;|&nbsp; MTD June {rwk_short} &nbsp;|&nbsp; Targets = AFS26 ×1.19</span></div>
+<div class="sub-bar"><span>{report_date}</span><span>{date_range} &nbsp;|&nbsp; MTD {CM} {rwk_short} &nbsp;|&nbsp; Targets = AFS26 ×1.19</span></div>
  
 <div class="kpi-row">
   <div class="kpi"><div class="kpi-label" style="background:#2E75B6">Total Turnover</div><div class="kpi-val" style="color:#1F3864">R{d['total_rev']:,.0f}</div></div>
@@ -674,7 +699,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
         <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap">Mar</td>
         <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap">Apr</td>
         <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap">May</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;background:{c}">Jun ▶</td>
+        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;background:{c}">{CUR_MONTH} ▶</td>
         <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;opacity:.7">Jul</td>
         <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;opacity:.7">Aug</td>
         <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;opacity:.7">Sep</td>
@@ -697,13 +722,13 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 {tbl_row("March",   mar['act'], mar['tgt'], mar['avg'],  indent=True)}
 {tbl_row("April",   apr['act'], apr['tgt'], apr['avg'],  indent=True)}
 {tbl_row("May",     may_['act'],may_['tgt'],may_['avg'], indent=True)}
-{tbl_row(f"MTD June ({rmtd_span})", d['jun_act'], mtd_tgt, jun_avg_price, bold=True)}
+{tbl_row(f"MTD {CM} ({rmtd_span})", d['jun_act'], mtd_tgt, jun_avg_price, bold=True)}
 {rweek_rows}
-{tbl_row("Total incl. June MTD", d['total_rev'], total_tgt, tot_avg_price, total=True)}
+{tbl_row(f"Total incl. {CM} MTD", d['total_rev'], total_tgt, tot_avg_price, total=True)}
 <div class="bold-row" style="display:grid;grid-template-columns:1.9fr 1.1fr 1.1fr 1fr .9fr 1fr;font-size:11px;padding:6px 12px;gap:8px;border-bottom:1px solid #f0f0f0;height:8px"></div>
 {tbl_row("YTD Units (Mar–May)", ytd_units_act, ytd_units_tgt, bold=True)}
-{tbl_row(f"MTD Units (June {rwk_short})", jun_units_act, jun_units_tgt, indent=True)}
-{tbl_row("Total Units incl. June", tot_units_act, tot_units_tgt, total=True)}
+{tbl_row(f"MTD Units ({CM} {rwk_short})", jun_units_act, jun_units_tgt, indent=True)}
+{tbl_row(f"Total Units incl. {CM}", tot_units_act, tot_units_tgt, total=True)}
 </div>
  
 <div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden" id="ins1-block"></div>
@@ -736,7 +761,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
  
 <div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden" id="ins2-block"></div>
  
-<div class="section-hdr" style="margin-top:14px">National Performance by Region — MTD (June 2026 {rwk_short}) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">{rwk_detail}</span></div>
+<div class="section-hdr" style="margin-top:14px">National Performance by Region — MTD ({CM} 2026 {rwk_short}) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">{rwk_detail}</span></div>
 <div class="mtd-split">
   <div class="loc-tbl-wrap" id="mtd-tbl-wrap">
     <div class="loc-tbl-hdr" style="grid-template-columns:1.6fr .95fr .95fr .8fr .7fr">
@@ -829,7 +854,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   {sp_region_rows}
 </div>
  
-<div class="footer">HW24 {r} Sales Dashboard &bull; Confidential &bull; Generated {report_date} &bull; Data: March–June 2026 (June {rwk_short}) &bull; Targets = AFS26 ×1.19</div>
+<div class="footer">HW24 {r} Sales Dashboard &bull; Confidential &bull; Generated {report_date} &bull; Data: {date_range} ({CM} {rwk_short}) &bull; Targets = AFS26 ×1.19</div>
 </div>
  
 <script>
@@ -858,7 +883,7 @@ const avgDsPY = {{
 }};
  
 new Chart(document.getElementById('cPY'),{{type:'line',
-  data:{{labels:['March','April','May','June (MTD)'],datasets:[
+  data:{{labels:{chart_labels_js},datasets:[
     {{label:'Actual',data:{d['cum_act']},borderColor:REG_COL,borderWidth:2,borderDash:[],pointRadius:4,pointStyle:'circle',pointBackgroundColor:REG_COL,tension:.3,fill:false,yAxisID:'y'}},
     {{label:'Prior Year',data:{d['cum_py']},borderColor:GREY,borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'triangle',pointBackgroundColor:GREY,tension:.3,fill:false,yAxisID:'y'}},
     {{...avgDs}},
@@ -873,7 +898,7 @@ new Chart(document.getElementById('cPY'),{{type:'line',
 }});
  
 new Chart(document.getElementById('cYTD'),{{type:'line',
-  data:{{labels:['March','April','May','June (MTD)'],datasets:[
+  data:{{labels:{chart_labels_js},datasets:[
     {{label:'Target',data:{d['cum_tgt']},borderColor:'#C00000',borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'rectRot',pointBackgroundColor:'#C00000',tension:.3,fill:false,yAxisID:'y'}},
     {{label:'Actual',data:{d['cum_act']},borderColor:REG_COL,borderWidth:2,borderDash:[],pointRadius:4,pointStyle:'circle',pointBackgroundColor:REG_COL,tension:.3,fill:false,yAxisID:'y'}},
     {{...avgDs}},
@@ -910,9 +935,11 @@ window.addEventListener('load',function(){{
 }});
  
 // ── Monthly table ─────────────────────────────────────────────────────────────
-const monthActs  = {{Mar:{mar_act}, Apr:{apr_act}, May:{may_act}, Jun:{jun_act_v}, Jul:0,Aug:0,Sep:0,Oct:0,Nov:0,Dec:0,Jan:0,Feb:0}};
+const monthActs  = {_month_acts_js};
 const monthTgts  = {{Mar:{mar_tgt}, Apr:{apr_tgt}, May:{may_tgt}, Jun:{jun_full_tgt}, Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}}};
 const mths_order = ['Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb'];
+const monthsToDate = {_months_to_date_js};   // months with reporting data (incl. current MTD)
+const curMonth = '{CUR_MONTH}';
 const totalAct   = mths_order.reduce((s,m)=>s+monthActs[m],0);
 // YTD target: only sum months where we have actual data (excludes future months)
 const totalTgt   = mths_order.reduce((s,m)=>s+(monthActs[m]>0?monthTgts[m]:0),0);
@@ -926,13 +953,13 @@ const mbody = document.getElementById('monthly-table-body');
   td0.textContent=lbl; tr.appendChild(td0);
   mths_order.forEach(m=>{{
     const act=monthActs[m],tgt=monthTgts[m],delta=act-tgt;
-    const isJun=m==='Jun',isFuture=act===0&&m!=='Mar'&&m!=='Apr'&&m!=='May'&&m!=='Jun';
+    const isCur=m===curMonth,isFuture=!monthsToDate.includes(m);
     let v,col;
     if(key==='act')  {{v=act;  col='#1F3864';}}
     if(key==='tgt')  {{v=tgt;  col='#595959';}}
     if(key==='delta'){{v=isFuture?null:delta; col=delta<0?'#C00000':'#375623';}}
     const td=document.createElement('td');
-    td.style.cssText=`padding:5px 8px;text-align:right;white-space:nowrap;font-weight:${{key==='delta'?'700':'400'}};${{isJun?'background:#f0f8f0':''}}`;
+    td.style.cssText=`padding:5px 8px;text-align:right;white-space:nowrap;font-weight:${{key==='delta'?'700':'400'}};${{isCur?'background:#f0f8f0':''}}`;
     if(v===null||(key==='act'&&isFuture)){{td.innerHTML='<span style="color:#ccc">—</span>';}}
     else{{const fmt='R'+(Math.abs(v)/1e6).toFixed(1)+'M';
       td.innerHTML=v<0?`<span style="color:#C00000">(${{fmt}})</span>`:`<span style="color:${{col}}">${{fmt}}</span>`;}}
@@ -975,11 +1002,11 @@ const insights = [
   {{
     num:2, col: junOk?posCol:negCol,
     title: junOk
-      ? `June MTD Tracking Ahead — W1+W2 above pro-rated target`
-      : `June MTD Behind Pro-Rated Target — Action Required`,
-    body: `June MTD <strong>R${{(junAct/1e6).toFixed(2)}}M</strong> vs pro-rated target <strong>R${{(junTgt/1e6).toFixed(2)}}M</strong> ({wd_el}/{wd_tot} working days). ` +
-      (junOk ? `Region is tracking well in June — maintain current sales momentum.`
-             : `Currently <strong style="color:${{negCol}}">(${{junPct}}%) below</strong> the day-weighted June target. Weekly target R${{(monthTgts['Jun']/{TOTAL_WEEKS}/1e6).toFixed(2)}}M requires focus in remaining weeks.`),
+      ? `{CM} MTD Tracking Ahead — above pro-rated target`
+      : `{CM} MTD Behind Pro-Rated Target — Action Required`,
+    body: `{CM} MTD <strong>R${{(junAct/1e6).toFixed(2)}}M</strong> vs pro-rated target <strong>R${{(junTgt/1e6).toFixed(2)}}M</strong> ({wd_el}/{wd_tot} working days). ` +
+      (junOk ? `Region is tracking well in {CM} — maintain current sales momentum.`
+             : `Currently <strong style="color:${{negCol}}">(${{junPct}}%) below</strong> the day-weighted {CM} target. Weekly target R${{(monthTgts['{CUR_MONTH}']/{TOTAL_WEEKS}/1e6).toFixed(2)}}M requires focus in remaining weeks.`),
     stats: [
       {{label:`W1 R${{({w1_act}/1e6).toFixed(2)}}M vs R${{({w1_tgt}/1e6).toFixed(2)}}M`,neg:{str(w1_act<w1_tgt).lower()}}},
       {{label:`W2 R${{({w2_act}/1e6).toFixed(2)}}M vs R${{({w2_tgt}/1e6).toFixed(2)}}M`,neg:{str(w2_act<w2_tgt).lower()}}}
@@ -1114,10 +1141,10 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
  
     # ── Data references from global state ─────────────────────────────────────
     r27 = afs27.copy(); r26 = afs26.copy()
-    r27_ytd = r27[r27['Period1'].isin(['Mar','Apr','May'])]
-    r27_jun = r27[r27['Period1']=='Jun']
-    r26_ytd = r26[r26['Period1'].isin(['Mar','Apr','May'])]
-    r26_jun = r26[r26['Period1']=='Jun']
+    r27_ytd = r27[r27['Period1'].isin(YTD_MONTHS)]
+    r27_jun = r27[r27['Period1']==CUR_MONTH]
+    r26_ytd = r26[r26['Period1'].isin(YTD_MONTHS)]
+    r26_jun = r26[r26['Period1']==CUR_MONTH]
  
     # ── Override manual params with DATA-DERIVED week info (fully data-driven) ──
     week_label   = CUR_WEEK_LABEL          # e.g. 'Week 3'
@@ -1141,7 +1168,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     def mavg(df, p):
         r=mrev(df,p); u=munit(df,p); return r/u if u else 0
  
-    mar_act=mrev(r27,'Mar'); apr_act=mrev(r27,'Apr'); may_act=mrev(r27,'May'); jun_act=mrev(r27,'Jun')
+    mar_act=mrev(r27,'Mar'); apr_act=mrev(r27,'Apr'); may_act=mrev(r27,'May'); jun_act=mrev(r27,CUR_MONTH)
     mar_py =mrev(r26,'Mar'); apr_py =mrev(r26,'Apr'); may_py =mrev(r26,'May'); jun_py =mrev(r26,'Jun')
     mar_avg=mavg(r27,'Mar'); apr_avg=mavg(r27,'Apr'); may_avg=mavg(r27,'May'); jun_avg=mavg(r27,'Jun')
     mar_avg_py=mavg(r26,'Mar'); apr_avg_py=mavg(r26,'Apr'); may_avg_py=mavg(r26,'May'); jun_avg_py=mavg(r26,'Jun')
@@ -1464,9 +1491,16 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
       </div>'''
         return html
  
-    # ── Monthly table JS data ──────────────────────────────────────────────────
-    mth_acts=f"Mar:{int(mar_act)},Apr:{int(apr_act)},May:{int(may_act)},Jun:{int(jun_act)},Jul:0,Aug:0,Sep:0,Oct:0,Nov:0,Dec:0,Jan:0,Feb:0"
+    # ── Monthly table JS data (data-driven: every month with data gets its actual) ──
+    import json as _json
+    _nat_acts = {mo: int(round(mrev(r27, mo))) for mo in FISCAL_ORDER}
+    mth_acts = ",".join(f"{mo}:{_nat_acts[mo]}" for mo in FISCAL_ORDER)
     mth_tgts=f"Mar:{mar_tgt},Apr:{apr_tgt},May:{may_tgt},Jun:{jun_tgt_full},Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}"
+    _months_to_date_js = _json.dumps(YTD_MONTHS + [CUR_MONTH])
+    CM = MONTH_FULL.get(CUR_MONTH, CUR_MONTH)
+    _first_full = MONTH_FULL.get(FISCAL_ORDER[0], 'March')
+    date_range = f"{_first_full} 2026 – {CM} 2026"
+    chart_labels_js = str([MONTH_FULL.get(mo, mo) for mo in YTD_MONTHS] + [f"{CM} (MTD)"])
  
     GREY='#888780'; AC='#1D9E75'
     prod_act_js=[prod.get(k,{'rev':0})['rev'] for k in ['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP']]
@@ -1540,7 +1574,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     _wk_tgt_js    = str([w['tgt'] for w in nat_weeks])
  
     # JS object literals for monthly table — pre-built as plain strings
-    _mth_acts = "{" + f"Mar:{int(mar_act)},Apr:{int(apr_act)},May:{int(may_act)},Jun:{int(jun_act)},Jul:0,Aug:0,Sep:0,Oct:0,Nov:0,Dec:0,Jan:0,Feb:0" + "}"
+    _mth_acts = "{" + ",".join(f"{mo}:{_nat_acts[mo]}" for mo in FISCAL_ORDER) + "}"
     _mth_tgts = "{" + f"Mar:{mar_tgt},Apr:{apr_tgt},May:{may_tgt},Jun:{jun_tgt_full},Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}" + "}"
  
     _daily = round(jun_tgt_full/20)
@@ -1576,7 +1610,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 </head>
 <body><div class="db">
 <div class="title-bar">HW24 GROUP SALES — NATIONAL DASHBOARD</div>
-<div class="sub-bar"><span>{report_date}</span><span>March 2026 – June 2026 &nbsp;|&nbsp; MTD: June 2026 — {week_label} ({days_elapsed} days) &nbsp;|&nbsp; All targets = AFS26 ×1.19</span></div>
+<div class="sub-bar"><span>{report_date}</span><span>{date_range} &nbsp;|&nbsp; MTD: {CM} 2026 — {week_label} ({days_elapsed} days) &nbsp;|&nbsp; All targets = AFS26 ×1.19</span></div>
  
 <div class="kpi-row">
   <div class="kpi"><div class="kpi-label" style="background:#2E75B6">Total Turnover</div><div class="kpi-val" style="color:#1F3864">R{total_rev:,.0f}</div></div>
@@ -1608,7 +1642,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
     <thead><tr style="background:#2E75B6;color:#fff">
       <td style="padding:6px 10px;font-weight:700;min-width:70px">Metric</td>
       <td style="padding:6px 8px;text-align:right;font-weight:700">Mar</td><td style="padding:6px 8px;text-align:right;font-weight:700">Apr</td><td style="padding:6px 8px;text-align:right;font-weight:700">May</td>
-      <td style="padding:6px 8px;text-align:right;font-weight:700;background:#375623">Jun ▶</td>
+      <td style="padding:6px 8px;text-align:right;font-weight:700;background:#375623">{CUR_MONTH} ▶</td>
       <td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Jul</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Aug</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Sep</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Oct</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Nov</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Dec</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Jan</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Feb</td>
       <td style="padding:6px 8px;text-align:right;font-weight:700;background:#1F3864">TOTAL</td>
     </tr></thead>
@@ -1624,11 +1658,11 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 {tbl_row("March",   int(mar_act), mar_tgt, mar_avg, indent=True)}
 {tbl_row("April",   int(apr_act), apr_tgt, apr_avg, indent=True)}
 {tbl_row("May",     int(may_act), may_tgt, may_avg, indent=True)}
-{tbl_row(f"MTD June ({mtd_week_span})", int(jun_act), jun_tgt_pro, jun_avg, bold=True)}
+{tbl_row(f"MTD {CM} ({mtd_week_span})", int(jun_act), jun_tgt_pro, jun_avg, bold=True)}
 {nat_week_rows}
-{tbl_row("Total incl. June MTD", int(total_rev), ytd_tgt+jun_tgt_pro, avg_price, total=True)}
+{tbl_row(f"Total incl. {CM} MTD", int(total_rev), ytd_tgt+jun_tgt_pro, avg_price, total=True)}
 {tbl_row("YTD Units (Mar–May)", ytd_u_act, ytd_u_tgt, bold=True)}
-{tbl_row("MTD Units (June)", jun_u_act, jun_u_tgt, indent=True)}
+{tbl_row(f"MTD Units ({CM})", jun_u_act, jun_u_tgt, indent=True)}
 {tbl_row("Total Units", int(total_units), tot_u_tgt, total=True)}
 </div>
  
@@ -1655,7 +1689,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:8px 14px 0">{region_cards()}</div>
  
 <!-- MTD -->
-<div class="section-hdr" style="margin-top:14px">National Performance by Region — MTD (June 2026 {week_label}) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">W1={fmtK(w1_tgt)} · W2={fmtK(w2_tgt)} ({days_elapsed}/5 days) · Daily={fmtK(round(jun_tgt_full/20))}</span></div>
+<div class="section-hdr" style="margin-top:14px">National Performance by Region — MTD ({CM} 2026 {week_label}) &nbsp;<span style="font-size:10px;font-weight:400;opacity:.8">W1={fmtK(w1_tgt)} · W2={fmtK(w2_tgt)} ({days_elapsed}/5 days) · Daily={fmtK(round(jun_tgt_full/20))}</span></div>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:8px 14px 0;align-items:stretch">
   <div>
     <div style="display:grid;grid-template-columns:1.6fr .95fr .95fr .8fr .7fr;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;padding:7px 8px;gap:4px;border-radius:4px 4px 0 0">
@@ -1744,14 +1778,14 @@ const avgDs={{label:'Avg Price',data:avgs,type:'line',borderColor:GREY,borderWid
 const avgDsPY={{label:'Avg Price PY',data:avgsPY,type:'line',borderColor:'#B9A36B',borderWidth:1.5,borderDash:[1,3],pointRadius:3,pointStyle:'rect',fill:false,yAxisID:'y2'}};
 const y2={{position:'right',min:{_y2_min},max:{_y2_max},ticks:{{font:{{size:9}},color:GREY,callback:v=>'R'+v.toFixed(0)}},grid:{{display:false}},title:{{display:true,text:'Avg Price (R)',font:{{size:9}},color:GREY}}}};
  
-new Chart(document.getElementById('cPY'),{{type:'line',data:{{labels:['March','April','May','June (MTD)'],datasets:[
+new Chart(document.getElementById('cPY'),{{type:'line',data:{{labels:{chart_labels_js},datasets:[
   {{label:'Actual',data:{_cum_act},borderColor:AC,borderWidth:2,pointRadius:4,pointStyle:'circle',pointBackgroundColor:AC,tension:.3,fill:false,yAxisID:'y'}},
   {{label:'PY',data:{_cum_py},borderColor:GREY,borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'triangle',pointBackgroundColor:GREY,tension:.3,fill:false,yAxisID:'y'}},
   {{...avgDs}},
   {{...avgDsPY}}
 ]}},options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{font:{{size:9}}}},grid:{{display:false}}}},y:{{ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(1)+'M'}},grid:{{color:gridC}}}},y2}}}}}});
  
-new Chart(document.getElementById('cYTD'),{{type:'line',data:{{labels:['March','April','May','June (MTD)'],datasets:[
+new Chart(document.getElementById('cYTD'),{{type:'line',data:{{labels:{chart_labels_js},datasets:[
   {{label:'Target',data:{_cum_tgt},borderColor:'#C00000',borderWidth:2,borderDash:[5,4],pointRadius:4,pointStyle:'rectRot',pointBackgroundColor:'#C00000',tension:.3,fill:false,yAxisID:'y'}},
   {{label:'Actual',data:{_cum_act},borderColor:AC,borderWidth:2,pointRadius:4,pointStyle:'circle',pointBackgroundColor:AC,tension:.3,fill:false,yAxisID:'y'}},
   {{...avgDs}},
@@ -1775,6 +1809,7 @@ new Chart(document.getElementById('cHBar'),{{type:'bar',plugins:[vp],data:{{
   scales:{{x:{{min:0,ticks:{{font:{{size:9}},callback:v=>'R'+(v/1e6).toFixed(0)+'M'}},grid:{{color:'rgba(180,180,180,0.2)'}}}},y:{{ticks:{{font:{{size:10,weight:'700'}},color:'#333'}},grid:{{display:false}}}}}},layout:{{padding:{{right:42}}}}}}}});
  
 const mActs={_mth_acts};
+const curMonth='{CUR_MONTH}';
 const mTgts={_mth_tgts};
 const mths=['Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb'];
 const tAct=mths.reduce((s,m)=>s+mActs[m],0);
@@ -1784,12 +1819,13 @@ const body=document.getElementById('monthly-body');
   const tr=document.createElement('tr'); tr.style.borderBottom='1px solid #f0f0f0';
   const td0=document.createElement('td'); td0.style.cssText='padding:5px 10px;font-weight:'+(key==='delta'?'700':'400')+';white-space:nowrap;background:#f9f9f9'; td0.textContent=lbl; tr.appendChild(td0);
   mths.forEach(m=>{{
-    const act=mActs[m],tgt=mTgts[m],delta=act-tgt,isFut=act===0&&!['Mar','Apr','May','Jun'].includes(m);
+    const monthsToDate={_months_to_date_js};
+    const act=mActs[m],tgt=mTgts[m],delta=act-tgt,isFut=!monthsToDate.includes(m);
     let v,col;
     if(key==='act'){{v=act;col='#1F3864';}}
     if(key==='tgt'){{v=tgt;col='#595959';}}
     if(key==='delta'){{v=isFut?null:delta;col=delta<0?'#C00000':'#375623';}}
-    const td=document.createElement('td'); td.style.cssText='padding:5px 8px;text-align:right;white-space:nowrap;font-weight:'+(key==='delta'?'700':'400')+';'+(['Jun'].includes(m)?'background:#f0f8f0':'')+';';
+    const td=document.createElement('td'); td.style.cssText='padding:5px 8px;text-align:right;white-space:nowrap;font-weight:'+(key==='delta'?'700':'400')+';'+((m===curMonth)?'background:#f0f8f0':'')+';';
     if(v===null||(key==='act'&&isFut)){{td.innerHTML='<span style="color:#ccc">—</span>';}}
     else{{const fmt='R'+(Math.abs(v)/1e6).toFixed(1)+'M'; td.innerHTML=v<0?`<span style="color:#C00000">(${{fmt}})</span>`:`<span style="color:${{col}}">${{fmt}}</span>`;}}
     tr.appendChild(td);
