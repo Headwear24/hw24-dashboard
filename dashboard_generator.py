@@ -252,11 +252,14 @@ def calc(region):
     # Uses the global WEEKS_PRESENT / WEEK_DAYS computed from the data in initialise().
     weeks=[]
     for wlabel in WEEKS_PRESENT:
-        wact=int(r27[(r27['Period1']==CUR_MONTH)&(r27['Week']==wlabel)]['Line Revenue'].sum())
+        wsub=r27[(r27['Period1']==CUR_MONTH)&(r27['Week']==wlabel)]
+        wrev=wsub['Line Revenue'].sum(); wqty=wsub['Line Inv Qty'].sum()
+        wact=int(wrev)
+        wavg=float(wrev/wqty) if wqty else 0.0
         ndays=WEEK_DAYS.get(wlabel,5)
         # weekly target prorated by working days actually elapsed in that week (out of 5)
         wtgt=round(weekly_tgt * (min(ndays,5)/5))
-        weeks.append({'label':wlabel,'act':wact,'tgt':wtgt,'days':ndays,'partial':ndays<5})
+        weeks.append({'label':wlabel,'act':wact,'tgt':wtgt,'avg':wavg,'days':ndays,'partial':ndays<5})
     week_max=max([w['act'] for w in weeks]+[round(py_jun*UPLIFT/4)]) if weeks else 1
     chart_max=int(max(w1_act, round(py_jun*UPLIFT/4), w2_act, round(py_jun*UPLIFT/4*2/5)) * 1.2) if py_jun>0 else max(w1_act,w2_act,1000)*2
     monthly={}
@@ -291,12 +294,16 @@ def calc(region):
     sp26_r=r26y[~r26y[sp_col].isin(excl)].groupby(sp_col)['Line Revenue'].sum()
     sub_data=[]
     for pc,pn in SUB_PROVS.get(region,[]):
-        cv=r27[r27[prov_col]==pc]['Line Revenue'].sum()
+        _ssub=r27[r27[prov_col]==pc]
+        cv=_ssub['Line Revenue'].sum(); _sq=_ssub['Line Inv Qty'].sum()
+        _savg=float(cv/_sq) if _sq else 0.0
         pyv=r26y[r26y[prov_col]==pc]['Line Revenue'].sum()+r26j[r26j[prov_col]==pc]['Line Revenue'].sum()*WD_PER
-        sub_data.append({'code':pc,'name':pn,'v':cv,'t':round(pyv*UPLIFT)})
+        sub_data.append({'code':pc,'name':pn,'v':cv,'t':round(pyv*UPLIFT),'avg':_savg})
     if region=='International':
-        for ctry,rev in r27.groupby('Country')['Line Revenue'].sum().nlargest(5).items():
-            sub_data.append({'code':ctry,'name':COUNTRY_MAP.get(ctry,ctry),'v':rev,'t':0})
+        _intl=r27.groupby('Country').agg(rev=('Line Revenue','sum'),qty=('Line Inv Qty','sum'))
+        for ctry,_row in _intl.nlargest(5,'rev').iterrows():
+            _cavg=float(_row['rev']/_row['qty']) if _row['qty'] else 0.0
+            sub_data.append({'code':ctry,'name':COUNTRY_MAP.get(ctry,ctry),'v':_row['rev'],'t':0,'avg':_cavg})
     py_s=r26y[r26y['Line Revenue']>0].groupby('Cust Name').agg(py_rev=('Line Revenue','sum'),py_qty=('Line Inv Qty','sum')).reset_index()
     pt=r26y.groupby('Cust Name')['Line Revenue'].sum().reset_index(); pt.columns=['Cust Name','py_total']
     py_s=py_s.merge(pt,on='Cust Name'); py_s=py_s[py_s['py_total']>=20000].copy(); py_s['py_avg']=py_s['py_rev']/py_s['py_qty']
@@ -372,6 +379,28 @@ def calc(region):
  
 REG_COLS={'Gauteng':'#185FA5','KZN':'#ED7D31','Western Cape':'#375623','Eastern Cape':'#843C0C','International':'#444444'}
  
+def month_header_cells(cur_month, ytd_months, cur_bg, nowrap=True):
+    """Data-driven Mar-Feb month header cells for the monthly table.
+    Labels every month from FISCAL_ORDER, highlights the true current month
+    with a marker, and dims future months. Replaces the old hardcoded header
+    that assumed the current month was always June (caused a duplicate month
+    label once the data rolled past June)."""
+    done = set(list(ytd_months) + [cur_month])
+    nw = "white-space:nowrap;" if nowrap else ""
+    cells = []
+    for mo in FISCAL_ORDER:
+        if mo == cur_month:
+            style = f"padding:6px 8px;text-align:right;font-weight:700;{nw}background:{cur_bg}"
+            label = f"{mo} \u25b6"
+        elif mo not in done:
+            style = f"padding:6px 8px;text-align:right;font-weight:700;{nw}opacity:.7"
+            label = mo
+        else:
+            style = f"padding:6px 8px;text-align:right;font-weight:700;{nw}"
+            label = mo
+        cells.append(f'<td style="{style}">{label}</td>')
+    return "".join(cells)
+
 def build_html(d, report_date=None):
     import datetime
     if report_date is None:
@@ -540,6 +569,7 @@ def build_html(d, report_date=None):
         sub_html+=f'''<div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px 12px;background:#fff">
   <div style="font-size:12px;font-weight:700;margin-bottom:3px">{s["name"]}</div>
   <div style="font-size:16px;font-weight:700;color:{gap_col};margin-bottom:2px">{fmtR(s["v"])}</div>
+  <div style="font-size:10px;font-weight:700;color:#185FA5;margin-bottom:3px">Avg R{s.get("avg",0):.2f}/unit</div>
   <div style="font-size:10px;color:{gap_col};margin-bottom:5px">{gap_str}</div>
   <div style="height:4px;background:#ddd;border-radius:2px;margin-bottom:3px"><div style="width:{min(100,round(pct_))}%;height:4px;background:{prog_col};border-radius:2px"></div></div>
 </div>'''
@@ -622,7 +652,7 @@ def build_html(d, report_date=None):
     # Dynamic regional week rows + chart arrays (all weeks present, partial labelled)
     rweek_rows = "\n".join(
         tbl_row(f"{w['label']} ({w['days']} days)" if w['partial'] else w['label'],
-                w['act'], w['tgt'], indent=True)
+                w['act'], w['tgt'], (w.get('avg') or None), indent=True)
         for w in rweeks)
     _rwk_labels_js = str([ (f"{w['label']} ({w['days']}d)" if w['partial'] else w['label']) for w in rweeks ])
     _rwk_act_js    = str([w['act'] for w in rweeks])
@@ -713,18 +743,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
     <thead>
       <tr style="background:#2E75B6;color:#fff">
         <td style="padding:6px 10px;font-weight:700;min-width:70px">Metric</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap">Mar</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap">Apr</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap">May</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;background:{c}">{CUR_MONTH} ▶</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;opacity:.7">Jul</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;opacity:.7">Aug</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;opacity:.7">Sep</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;opacity:.7">Oct</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;opacity:.7">Nov</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;opacity:.7">Dec</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;opacity:.7">Jan</td>
-        <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;opacity:.7">Feb</td>
+        {month_header_cells(CUR_MONTH, YTD_MONTHS, c, nowrap=True)}
         <td style="padding:6px 8px;text-align:right;font-weight:700;white-space:nowrap;background:#1F3864">TOTAL</td>
       </tr>
     </thead>
@@ -1205,10 +1224,13 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     # --- Dynamic weeks for June (data-driven) ---
     nat_weeks=[]
     for wlabel in WEEKS_PRESENT:
-        wact=float(r27_jun[r27_jun['Week']==wlabel]['Line Revenue'].sum())
+        wsub=r27_jun[r27_jun['Week']==wlabel]
+        wrev=float(wsub['Line Revenue'].sum()); wqty=float(wsub['Line Inv Qty'].sum())
+        wact=wrev
+        wavg=(wrev/wqty) if wqty else 0.0
         ndays=WEEK_DAYS.get(wlabel,5)
         wtgt=round(weekly_tgt*(min(ndays,5)/5))
-        nat_weeks.append({'label':wlabel,'act':int(wact),'tgt':int(wtgt),'days':ndays,'partial':ndays<5})
+        nat_weeks.append({'label':wlabel,'act':int(wact),'tgt':int(wtgt),'avg':wavg,'days':ndays,'partial':ndays<5})
     # MTD prorated target = sum of per-week targets actually elapsed
     jun_tgt_pro=sum(w['tgt'] for w in nat_weeks)
     mtd_week_span=" + ".join("W"+w['label'].split()[1] for w in nat_weeks)
@@ -1271,12 +1293,14 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     reg_data={}
     for reg in ['Gauteng','KZN','Western Cape','Eastern Cape','International']:
         cy=float(r27_all[r27_all['Region']==reg]['Line Revenue'].sum())
+        cy_units=float(r27_all[r27_all['Region']==reg]['Line Inv Qty'].sum())
+        avg=(cy/cy_units) if cy_units else 0.0
         py_y=float(r26_ytd[r26_ytd['Region']==reg]['Line Revenue'].sum())
         py_j=float(r26_jun[r26_jun['Region']==reg]['Line Revenue'].sum())
         tgt=round((py_y+py_j*pro_rat)*UPLIFT)
         mtd_act=float(r27_jun[r27_jun['Region']==reg]['Line Revenue'].sum())
         mtd_tgt=round(py_j*UPLIFT*pro_rat)
-        reg_data[reg]={'cy':cy,'tgt':tgt,'mtd_act':mtd_act,'mtd_tgt':mtd_tgt}
+        reg_data[reg]={'cy':cy,'tgt':tgt,'mtd_act':mtd_act,'mtd_tgt':mtd_tgt,'avg':avg}
  
     SUB_MAP={'GP':('Gauteng core','Gauteng'),'LP':('Limpopo','Gauteng'),'NW':('North West','Gauteng'),
              'MP':('Mpumalanga','Gauteng'),'FS':('Free State','Gauteng'),
@@ -1477,6 +1501,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
             cards.append(f'''<div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px 12px;background:#fff">
       <div style="font-size:12px;font-weight:700;margin-bottom:2px">{reg}</div>
       <div style="font-size:16px;font-weight:700;color:{col_};margin-bottom:2px">{fmtM(d["cy"])}</div>
+      <div style="font-size:10px;font-weight:700;color:#185FA5;margin-bottom:2px">Avg R{d.get("avg",0):.2f}/unit</div>
       <div style="font-size:10px;color:{col_};margin-bottom:4px">{gstr}</div>
       <div style="height:4px;background:#ddd;border-radius:2px;margin-bottom:4px"><div style="width:{prog}%;height:4px;background:{pc};border-radius:2px"></div></div>
       <div style="font-size:9px;color:#888;margin-bottom:5px">{"R"+(str(round(d["cy"]/1e6,1)))+"M of R"+(str(round(d["tgt"]/1e6,1)))+"M" if d["tgt"] else "Top 3 export markets"}</div>
@@ -1610,7 +1635,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     # Dynamic period-table week rows (label shows day count when partial)
     nat_week_rows = "\n".join(
         tbl_row(f"{w['label']} ({w['days']} days)" if w['partial'] else w['label'],
-                w['act'], w['tgt'], indent=True)
+                w['act'], w['tgt'], (w.get('avg') or None), indent=True)
         for w in nat_weeks)
     # JS arrays for the MTD chart (one entry per week present)
     _wk_labels_js = str([ (f"{w['label']} ({w['days']}d)" if w['partial'] else w['label']) for w in nat_weeks ])
@@ -1685,9 +1710,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   <table id="monthly-table" style="width:100%;border-collapse:collapse;font-size:10px">
     <thead><tr style="background:#2E75B6;color:#fff">
       <td style="padding:6px 10px;font-weight:700;min-width:70px">Metric</td>
-      <td style="padding:6px 8px;text-align:right;font-weight:700">Mar</td><td style="padding:6px 8px;text-align:right;font-weight:700">Apr</td><td style="padding:6px 8px;text-align:right;font-weight:700">May</td>
-      <td style="padding:6px 8px;text-align:right;font-weight:700;background:#375623">{CUR_MONTH} ▶</td>
-      <td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Jul</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Aug</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Sep</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Oct</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Nov</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Dec</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Jan</td><td style="padding:6px 8px;text-align:right;font-weight:700;opacity:.7">Feb</td>
+      {month_header_cells(CUR_MONTH, YTD_MONTHS, '#375623', nowrap=False)}
       <td style="padding:6px 8px;text-align:right;font-weight:700;background:#1F3864">TOTAL</td>
     </tr></thead>
     <tbody id="monthly-body"></tbody>
