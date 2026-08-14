@@ -571,9 +571,11 @@ def build_html(d, report_date=None):
         act=pv.get('rev',0); tgt=pv.get('tgt',0); dl=act-tgt
         pc=(dl/tgt*100) if tgt else 0
         dcol='#C00000' if dl<0 else '#375623'
-        dtxt=(f"(R{abs(dl)/1e6:.2f}M)" if abs(dl)>=1e6 else f"(R{abs(dl)/1e3:.1f}K)") if dl<0 else (f"R{dl/1e6:.2f}M" if dl>=1e6 else f"R{dl/1e3:.1f}K")
+        def _m(v): return (f"R{v/1e6:.2f}M" if abs(v)>=1e6 else f"R{v/1e3:.1f}K")
+        atxt=_m(act); ttxt=_m(tgt)
+        dtxt=f"({_m(abs(dl))})" if dl<0 else f"+{_m(dl)}"
         ptxt=f"({abs(pc):.0f}%)" if pc<0 else f"+{pc:.0f}%"
-        return f'<div style="display:grid;grid-template-columns:44px 1fr 40px;padding:3px 6px;border-bottom:1px solid #f0f0f0;font-size:9px"><span style="font-weight:700">{grp}</span><span style="text-align:right;color:{dcol}">{dtxt}</span><span style="text-align:right;color:{dcol}">{ptxt}</span></div>'
+        return f'<div style="display:grid;grid-template-columns:52px 1fr 1fr 1fr 40px;padding:3px 6px;border-bottom:1px solid #f0f0f0;font-size:9px"><span style="font-weight:700">{grp}</span><span style="text-align:right">{atxt}</span><span style="text-align:right">{ttxt}</span><span style="text-align:right;color:{dcol}">{dtxt}</span><span style="text-align:right;color:{dcol}">{ptxt}</span></div>'
     delta_rows_r=''.join(_drow(g) for g in cls_list)
     def _irow(it,bg):
         cls=it["CLASS"].strip()
@@ -841,7 +843,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   <div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px;display:flex;flex-direction:column">
     <div class="chart-title">YTD TURNOVER BY PRODUCT GROUP — ACTUAL vs TARGET (PY+19%)</div>
     <div style="font-size:9px;margin-bottom:6px">
-      <div style="display:grid;grid-template-columns:44px 1fr 40px;background:#2E75B6;color:#fff;font-weight:700;padding:4px 6px;border-radius:4px 4px 0 0;font-size:9px"><span>Group</span><span style="text-align:right">Delta (R)</span><span style="text-align:right">%</span></div>
+      <div style="display:grid;grid-template-columns:52px 1fr 1fr 1fr 40px;background:#2E75B6;color:#fff;font-weight:700;padding:4px 6px;border-radius:4px 4px 0 0;font-size:9px"><span>Group</span><span style="text-align:right">Actual</span><span style="text-align:right">Target</span><span style="text-align:right">Delta (R)</span><span style="text-align:right">%</span></div>
       {delta_rows_r}
     </div>
     <div id="hbar-wrap" style="position:relative;flex:1;min-height:300px"><canvas id="cHBar"></canvas></div>
@@ -1542,14 +1544,20 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     prod_tgt_js=[prod.get(k,{'tgt':0})['tgt'] for k in ['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP']]
     prod_delta_js=[(prod.get(k,{'rev':0,'tgt':1})) for k in ['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP']]
  
-    delta_rows=''.join([
-        f'''<div style="display:grid;grid-template-columns:44px 1fr 40px;gap:0;padding:4px 6px;border-bottom:1px solid #f0f0f0;background:{"#fff" if i%2==0 else "#f9f9f9"};align-items:center">
-      <span style="font-weight:700;color:#333">{k.strip()}</span>
-      <span style="text-align:right;font-weight:700;color:#C00000">({fmtK(abs(pd["rev"]-pd["tgt"]))})</span>
-      <span style="text-align:right;font-weight:700;color:#C00000">({abs(round((pd["rev"]-pd["tgt"])/pd["tgt"]*100 if pd["tgt"] else 0))}%)</span>
-    </div>'''
-        for i,(k,pd) in enumerate(zip(['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP'],[prod.get(k,{'rev':0,'tgt':1}) for k in ['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP']]))
-    ])
+    def _ndrow(k, pdv, i):
+        act=pdv.get('rev',0); tgt=pdv.get('tgt',0); dl=act-tgt
+        pc=(dl/tgt*100) if tgt else 0
+        dcol='#C00000' if dl<0 else '#375623'
+        dtxt=f"({fmtK(abs(dl))})" if dl<0 else f"+{fmtK(dl)}"
+        ptxt=f"({abs(pc):.0f}%)" if pc<0 else f"+{pc:.0f}%"
+        bg="#fff" if i%2==0 else "#f9f9f9"
+        return (f'<div style="display:grid;grid-template-columns:52px 1fr 1fr 1fr 40px;gap:0;padding:4px 6px;border-bottom:1px solid #f0f0f0;background:{bg};align-items:center">'
+                f'<span style="font-weight:700;color:#333">{k.strip()}</span>'
+                f'<span style="text-align:right">{fmtK(act)}</span>'
+                f'<span style="text-align:right">{fmtK(tgt)}</span>'
+                f'<span style="text-align:right;font-weight:700;color:{dcol}">{dtxt}</span>'
+                f'<span style="text-align:right;font-weight:700;color:{dcol}">{ptxt}</span></div>')
+    delta_rows=''.join(_ndrow(k, prod.get(k,{'rev':0,'tgt':1}), i) for i,k in enumerate(['LPCTO','STPRO','LPMTO','UFLEX','LPIMP','RAWMT','REPLEN','OPP']))
  
     # ── New + worst client rows ────────────────────────────────────────────────
     max_new=new_cl['rev'].max() if len(new_cl) else 1
@@ -1778,7 +1786,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   <div style="border:1px solid #e0e0e0;border-radius:6px;padding:10px;display:flex;flex-direction:column">
     <div class="chart-title">YTD TURNOVER BY PRODUCT GROUP — ACTUAL vs TARGET (PY+19%)</div>
     <div id="hbar-delta" style="display:flex;flex-direction:column;justify-content:center;min-width:130px;padding:2px 0;font-size:9px;margin-bottom:6px">
-      <div style="display:grid;grid-template-columns:44px 1fr 40px;background:#2E75B6;color:#fff;font-weight:700;padding:4px 6px;border-radius:4px 4px 0 0;font-size:9px"><span>Group</span><span style="text-align:right">Delta (R)</span><span style="text-align:right">%</span></div>
+      <div style="display:grid;grid-template-columns:52px 1fr 1fr 1fr 40px;background:#2E75B6;color:#fff;font-weight:700;padding:4px 6px;border-radius:4px 4px 0 0;font-size:9px"><span>Group</span><span style="text-align:right">Actual</span><span style="text-align:right">Target</span><span style="text-align:right">Delta (R)</span><span style="text-align:right">%</span></div>
       {delta_rows}
     </div>
     <div id="hbar-wrap" style="position:relative;flex:1;min-height:340px"><canvas id="cHBar"></canvas></div>
