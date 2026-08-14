@@ -130,7 +130,16 @@ MONTH_FULL={'Mar':'March','Apr':'April','May':'May','Jun':'June','Jul':'July','A
             'Sep':'September','Sept':'September','Oct':'October','Nov':'November','Dec':'December',
             'Jan':'January','Feb':'February'}
 TOTAL_WEEKS=4   # total Week-of-Month buckets in the current month (4 or 5). Set in initialise().
+MONTH_COMPLETE=False   # True when the latest data month is fully elapsed (month-end close). Set in initialise().
  
+def _last_working_day(year, month):
+    """Last Monday-Friday date of the month (used to detect a completed month)."""
+    import datetime, calendar
+    d = datetime.date(year, month, calendar.monthrange(year, month)[1])
+    while d.weekday() >= 5:  # Sat=5, Sun=6 -> step back to the preceding Friday
+        d -= datetime.timedelta(days=1)
+    return d
+
 def weeks_in_month(year, month):
     """HW24 accounting weeks-in-month rule (validated against the 2026/27 schedule).
     A week is Mon-Sun. For each week overlapping the month, count its working days
@@ -197,13 +206,24 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
         WEEK_DAYS[w] = int(days) if days else 5
     CUR_WEEK_LABEL = WEEKS_PRESENT[-1]
     CUR_WEEK_DAYS = WEEK_DAYS.get(CUR_WEEK_LABEL, 5)
-    global TOTAL_WEEKS, REPORT_DATE, REPORT_YEAR
+    global TOTAL_WEEKS, REPORT_DATE, REPORT_YEAR, MONTH_COMPLETE
     # --- Report date & large-order windows from the latest invoice date ---
     today_dt = pd.to_datetime(afs27['Inv Dt'], errors='coerce').max()
     # Total weeks in the current accounting month (4 or 5) — from the calendar rule
     # (validated against the 2026/27 accounting schedule; no data dependency).
     if pd.notna(today_dt):
         TOTAL_WEEKS = weeks_in_month(int(today_dt.year), int(today_dt.month))
+    # --- Close-month detection (data-driven, no machine clock): if the data reaches the
+    #     month's last working day, treat the latest month as COMPLETE -> full targets,
+    #     no MTD pro-rating. Mid-month daily runs stay pro-rated exactly as before. ---
+    MONTH_COMPLETE = False
+    if pd.notna(today_dt):
+        _lwd = _last_working_day(int(today_dt.year), int(today_dt.month))
+        MONTH_COMPLETE = bool(today_dt.date() >= _lwd)
+        if MONTH_COMPLETE:
+            WD_PER = 1.0
+            WEEK_DAYS = {w: 5 for w in WEEKS_PRESENT}
+            CUR_WEEK_DAYS = 5
     if pd.notna(today_dt):
         # report date = latest invoice date in the data (platform-independent formatting)
         REPORT_DATE = f"{today_dt.day} {today_dt.strftime('%b %Y')}"
@@ -315,7 +335,7 @@ def calc(region):
     # Data-driven pro-rating factor for the current (partial) month
     _wd_el = (len(WEEKS_PRESENT)-1)*5 + CUR_WEEK_DAYS
     _wd_tot = TOTAL_WEEKS*5
-    _pro_rat = _wd_el/_wd_tot if _wd_tot else 0
+    _pro_rat = 1.0 if MONTH_COMPLETE else (_wd_el/_wd_tot if _wd_tot else 0)
     cum_act=[0]*_nms; cum_tgt=[0]*_nms; cum_py=[0]*_nms; ra=rt=rp=0
     for i,p1 in enumerate(_mtd_list):
         ra+=monthly[p1]['act']
@@ -710,7 +730,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <body>
 <div class="db">
 <div class="title-bar">HW24 {r.upper()} SALES — DASHBOARD</div>
-<div class="sub-bar"><span>{report_date}</span><span>{date_range} &nbsp;|&nbsp; MTD {CM} {rwk_short} &nbsp;|&nbsp; Targets = AFS26 ×1.19</span></div>
+<div class="sub-bar"><span>{report_date}</span><span>{date_range} &nbsp;|&nbsp; {CM + " (Full Month)" if MONTH_COMPLETE else "MTD " + CM + " " + rwk_short} &nbsp;|&nbsp; Targets = AFS26 ×1.19</span></div>
  
 <div class="kpi-row">
   <div class="kpi"><div class="kpi-label" style="background:#2E75B6">Total Turnover</div><div class="kpi-val" style="color:#1F3864">R{d['total_rev']:,.0f}</div></div>
@@ -756,7 +776,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <div class="tbl-hdr" style="grid-template-columns:1.9fr 1.1fr 1.1fr 1fr .9fr 1fr"><span>Period</span><span style="text-align:right">Actual</span><span style="text-align:right">Target</span><span style="text-align:right">Delta</span><span style="text-align:right">% Delta</span><span style="text-align:right">Avg Unit Price</span></div>
 {tbl_row(f"YTD Turnover ({ytd_range})", d['ytd_act'], d['tgt_ytd'], ytd_avg_price, bold=True)}
 {ytd_month_rows}
-{tbl_row(f"MTD {CM} ({rmtd_span})", d['jun_act'], mtd_tgt, jun_avg_price, bold=True)}
+{tbl_row((f"{CM} (Full Month)" if MONTH_COMPLETE else f"MTD {CM} ({rmtd_span})"), d['jun_act'], mtd_tgt, jun_avg_price, bold=True)}
 {rweek_rows}
 {tbl_row(f"Total incl. {CM} MTD", d['total_rev'], total_tgt, tot_avg_price, total=True)}
 <div class="bold-row" style="display:grid;grid-template-columns:1.9fr 1.1fr 1.1fr 1fr .9fr 1fr;font-size:11px;padding:6px 12px;gap:8px;border-bottom:1px solid #f0f0f0;height:8px"></div>
@@ -970,7 +990,7 @@ window.addEventListener('load',function(){{
  
 // ── Monthly table ─────────────────────────────────────────────────────────────
 const monthActs  = {_month_acts_js};
-const monthTgts  = {{Mar:{mar_tgt}, Apr:{apr_tgt}, May:{may_tgt}, Jun:{jun_full_tgt}, Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}}};
+const monthTgts  = {{Mar:{mar_tgt}, Apr:{apr_tgt}, May:{may_tgt}, Jun:{_rm('Jun')}, Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}}};
 const mths_order = ['Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb'];
 const monthsToDate = {_months_to_date_js};   // months with reporting data (incl. current MTD)
 const curMonth = '{CUR_MONTH}';
@@ -1187,7 +1207,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     w2_frac = days_elapsed / 5
     wd_el   = n_weeks_full * 5 + days_elapsed
     wd_tot  = TOTAL_WEEKS * 5
-    pro_rat = wd_el / wd_tot
+    pro_rat = 1.0 if MONTH_COMPLETE else (wd_el / wd_tot)
  
     # ── National KPIs ──────────────────────────────────────────────────────────
     total_rev   = float(r27['Line Revenue'].sum())
@@ -1547,7 +1567,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
     import json as _json
     _nat_acts = {mo: int(round(mrev(r27, mo))) for mo in FISCAL_ORDER}
     mth_acts = ",".join(f"{mo}:{_nat_acts[mo]}" for mo in FISCAL_ORDER)
-    mth_tgts=f"Mar:{mar_tgt},Apr:{apr_tgt},May:{may_tgt},Jun:{jun_tgt_full},Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}"
+    mth_tgts=f"Mar:{mar_tgt},Apr:{apr_tgt},May:{may_tgt},Jun:{rm('Jun')},Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}"
     _months_to_date_js = _json.dumps(YTD_MONTHS + [CUR_MONTH])
     CM = MONTH_FULL.get(CUR_MONTH, CUR_MONTH)
     # YTD range label + a row per completed YTD month (data-driven)
@@ -1644,7 +1664,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
  
     # JS object literals for monthly table — pre-built as plain strings
     _mth_acts = "{" + ",".join(f"{mo}:{_nat_acts[mo]}" for mo in FISCAL_ORDER) + "}"
-    _mth_tgts = "{" + f"Mar:{mar_tgt},Apr:{apr_tgt},May:{may_tgt},Jun:{jun_tgt_full},Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}" + "}"
+    _mth_tgts = "{" + f"Mar:{mar_tgt},Apr:{apr_tgt},May:{may_tgt},Jun:{rm('Jun')},Jul:{jul_tgt},Aug:{aug_tgt},Sep:{sep_tgt},Oct:{oct_tgt},Nov:{nov_tgt},Dec:{dec_tgt},Jan:{jan_tgt},Feb:{feb_tgt}" + "}"
  
     _daily = round(jun_tgt_full/(TOTAL_WEEKS*5))
  
@@ -1679,7 +1699,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 </head>
 <body><div class="db">
 <div class="title-bar">HW24 GROUP SALES — NATIONAL DASHBOARD</div>
-<div class="sub-bar"><span>{report_date}</span><span>{date_range} &nbsp;|&nbsp; MTD: {CM} {REPORT_YEAR} — {week_label} ({days_elapsed} days) &nbsp;|&nbsp; All targets = AFS26 ×1.19</span></div>
+<div class="sub-bar"><span>{report_date}</span><span>{date_range} &nbsp;|&nbsp; {CM + " " + str(REPORT_YEAR) + " (Full Month)" if MONTH_COMPLETE else "MTD: " + CM + " " + str(REPORT_YEAR) + " — " + week_label + " (" + str(days_elapsed) + " days)"} &nbsp;|&nbsp; All targets = AFS26 ×1.19</span></div>
  
 <div class="kpi-row">
   <div class="kpi"><div class="kpi-label" style="background:#2E75B6">Total Turnover</div><div class="kpi-val" style="color:#1F3864">R{total_rev:,.0f}</div></div>
@@ -1723,7 +1743,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 <div class="tbl-hdr" style="grid-template-columns:1.9fr 1.1fr 1.1fr 1fr .9fr 1fr"><span>Period</span><span style="text-align:right">Actual</span><span style="text-align:right">Target</span><span style="text-align:right">Delta</span><span style="text-align:right">% Delta</span><span style="text-align:right">Avg Unit Price</span></div>
 {tbl_row(f"YTD Turnover ({ytd_range})", int(ytd_act), ytd_tgt, ytd_avg_disp, bold=True)}
 {nat_ytd_month_rows}
-{tbl_row(f"MTD {CM} ({mtd_week_span})", int(jun_act), jun_tgt_pro, jun_avg, bold=True)}
+{tbl_row((f"{CM} (Full Month)" if MONTH_COMPLETE else f"MTD {CM} ({mtd_week_span})"), int(jun_act), jun_tgt_pro, jun_avg, bold=True)}
 {nat_week_rows}
 {tbl_row(f"Total incl. {CM} MTD", int(total_rev), ytd_tgt+jun_tgt_pro, avg_price, total=True)}
 {tbl_row(f"YTD Units ({ytd_range})", ytd_u_act, ytd_u_tgt, bold=True)}
