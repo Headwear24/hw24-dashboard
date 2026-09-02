@@ -168,6 +168,8 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     global WEEKS_PRESENT, WEEK_DAYS, CUR_WEEK_LABEL, CUR_WEEK_DAYS, CUR_MONTH, YTD_MONTHS, CUR_MONTH_FULL
     global LO_START, LO_END, LO_WINDOWS
     WD_PER = wd_per
+    global _WORK_DIR
+    _WORK_DIR = os.path.dirname(os.path.abspath(filepath))
     df = pd.read_excel(filepath, sheet_name='AFS 26 Data', header=0)
     # ── Standing rule: zero out HEA14532 (Pick N Pay Retail) — revenue & qty to 0 ──
     # Applied at load so it flows into every total, split, chart and the BI extract.
@@ -420,6 +422,122 @@ def month_header_cells(cur_month, ytd_months, cur_bg, nowrap=True):
             label = mo
         cells.append(f'<td style="{style}">{label}</td>')
     return "".join(cells)
+
+# ============================================================================
+# NEW CLIENTS CREATED IN THE PRIOR MONTH  (first-week-of-month section)
+# A "new client" = a customer whose FIRST-EVER invoice in the loaded data
+# (AFS26 + AFS27) falls in the prior calendar month. Shown only in the first
+# week (days 1-7) of the current month. Columns: Name, Location, Spend to date.
+# ============================================================================
+_PROV_FULL_NC={'GP':'Gauteng','KZN':'KwaZulu-Natal','ZN':'KwaZulu-Natal','WC':'Western Cape',
+               'NC':'Northern Cape','EC':'Eastern Cape','FS':'Free State','MP':'Mpumalanga',
+               'LP':'Limpopo','NW':'North West','ZZZ':'International'}
+
+# History layers for the "first-ever purchase" test (placed next to the working file).
+# These are STATIC (never change): AFS25 and the Jan-Feb 2024 export.
+HISTORY_FILES=[
+    {"name":"2025_sales_source.xlsx","sheet":"HW006_MARIACOMM","header":0},
+    {"name":"Daily Sales -COMM.xlsx","sheet":"HW006_MARIACOMM","header":11},
+]
+_WORK_DIR=None
+_PRE_CACHE=None
+def _pre_customers():
+    """Set of customer IDs that purchased BEFORE the working file's history
+    (i.e., appear in AFS25 or the Jan-Feb 2024 export). Such customers can never
+    be 'new'. Cached. Falls back to empty set if history files are absent."""
+    global _PRE_CACHE
+    if _PRE_CACHE is not None: return _PRE_CACHE
+    ids=set(); base=_WORK_DIR or "."
+    # (a) fast path: tiny precomputed baseline committed next to the generator
+    csvp=os.path.join(base, "prior_customers.csv")
+    if os.path.exists(csvp):
+        try:
+            cd=pd.read_csv(csvp, dtype=str)
+            ids |= set(cd[cd.columns[0]].dropna().astype(str).str.strip())
+            _PRE_CACHE=ids; return ids
+        except Exception:
+            pass
+    # (b) fallback: read the big static history files if they are present
+    for h in HISTORY_FILES:
+        p=os.path.join(base, h["name"])
+        if not os.path.exists(p): continue
+        try:
+            hd=pd.read_excel(p, sheet_name=h["sheet"], header=h["header"], usecols=["Customer"])
+            ids |= set(hd["Customer"].dropna().astype(str).str.strip())
+        except Exception:
+            pass
+    _PRE_CACHE=ids
+    return ids
+
+def _nc_all():
+    if afs27 is None or afs26 is None: return None
+    a=pd.concat([afs26,afs27],ignore_index=True).copy()
+    a['_dt']=pd.to_datetime(a['Inv Dt'],errors='coerce')
+    return a.dropna(subset=['_dt'])
+
+def _show_new_clients():
+    """Show only in the first week (days 1-7) of the current (latest) month."""
+    a=_nc_all()
+    if a is None or a.empty: return False
+    latest=a['_dt'].max()
+    return bool(pd.notna(latest) and latest.day<=7)
+
+def new_month_clients(region=None):
+    """FIRST-TIME clients: their first-ever purchase (across ALL history —
+    Jan-2024, AFS25, AFS26, AFS27) falls in the prior calendar month. A customer
+    who bought at any earlier time is excluded via the pre-customer baseline.
+    Returns (rows, prior_month_label)."""
+    import calendar as _cal
+    a=_nc_all()
+    if a is None or a.empty: return [],""
+    latest=a['_dt'].max()
+    pm_month=latest.month-1 if latest.month>1 else 12
+    pm_year =latest.year if latest.month>1 else latest.year-1
+    firstwf=a.groupby('Customer')['_dt'].min()
+    pre=_pre_customers()
+    yr=firstwf.dt.year.values; mo=firstwf.dt.month.values
+    idstr=firstwf.index.astype(str).str.strip()
+    notpre=~idstr.isin(pre)
+    mask=(yr==pm_year)&(mo==pm_month)&notpre
+    new_ids=firstwf.index[mask]
+    sub=a[a['Customer'].isin(new_ids)]
+    if region is not None and 'Region' in sub.columns:
+        sub=sub[sub['Region']==region]
+    rows=[]
+    for cid,g in sub.groupby('Customer'):
+        nm=g['Cust Name'].dropna()
+        name=str(nm.mode().iloc[0]) if len(nm.mode()) else (str(nm.iloc[0]) if len(nm) else str(cid))
+        pv=g[prov_col].dropna()
+        prov=str(pv.mode().iloc[0]) if len(pv.mode()) else (str(pv.iloc[0]) if len(pv) else '')
+        loc=_PROV_FULL_NC.get(prov,prov) if prov else '—'
+        rows.append({'name':name,'loc':loc,'spend':float(g['Line Revenue'].sum())})
+    rows.sort(key=lambda x:-x['spend'])
+    return rows, f"{_cal.month_abbr[pm_month]} {pm_year}"
+
+def new_clients_html(region=None):
+    if not _show_new_clients():
+        return ''
+    rows,pm=new_month_clients(region)
+    scope=region if region else "National"
+    def _r(v): return f"R{v/1e6:.2f}M" if v>=1e6 else f"R{v/1e3:.1f}K"
+    if rows:
+        hdr=('<div style="display:grid;grid-template-columns:28px 1fr 150px 110px;gap:8px;padding:6px 12px;'
+             'background:#375623;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0">'
+             '<span>#</span><span>Customer Name</span><span>Location</span>'
+             '<span style="text-align:right">Spend to date</span></div>')
+        body="".join(
+            f'<div style="display:grid;grid-template-columns:28px 1fr 150px 110px;gap:8px;padding:6px 12px;'
+            f'border-bottom:1px solid #f0f0f0;font-size:11px;background:{"#fff" if i%2 else "#f7faf2"}">'
+            f'<span style="color:#888">{i}</span><span style="font-weight:600">{x["name"]}</span>'
+            f'<span style="color:#444">{x["loc"]}</span>'
+            f'<span style="text-align:right;font-weight:700">{_r(x["spend"])}</span></div>'
+            for i,x in enumerate(rows,1))
+        inner=hdr+body
+    else:
+        inner='<div style="padding:10px;color:#888;font-size:10px">No new clients created in the prior month.</div>'
+    return (f'<div class="section-hdr" style="margin-top:14px;background:#27500A">New Clients Created in {pm} — {scope} '
+            f'&nbsp;<span style="font-size:10px;font-weight:400;opacity:.85">first-week snapshot &bull; {len(rows)} new &bull; spend to date</span></div>'
+            f'<div style="margin:0 14px">{inner}</div>')
 
 def build_html(d, report_date=None):
     import datetime
@@ -850,6 +968,8 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   </div>
   {new_cl_rows if new_cl_rows else '<div style="padding:10px;color:#888;font-size:10px">No new clients</div>'}
 </div>
+ 
+{new_clients_html(r)}
  
 <div class="section-hdr" style="margin-top:14px">Worst Performing Clients — {r}</div>
 <div style="margin:0 14px">
@@ -1803,6 +1923,8 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   <div style="display:grid;grid-template-columns:22px 1fr 120px 90px 58px;gap:8px;align-items:center;padding:6px 12px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0"><span>#</span><span>Client</span><span>Province</span><span style="text-align:right">YTD Revenue</span><span style="text-align:right">Invoices</span></div>
   {new_rows}
 </div>
+ 
+{new_clients_html(None)}
  
 <!-- Worst clients -->
 <div class="section-hdr" style="margin-top:14px">Worst Performing Clients — AFS26 vs AFS27</div>
