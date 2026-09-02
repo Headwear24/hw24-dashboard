@@ -171,6 +171,11 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     global _WORK_DIR
     _WORK_DIR = os.path.dirname(os.path.abspath(filepath))
     df = pd.read_excel(filepath, sheet_name='AFS 26 Data', header=0)
+    # Normalise month label: the source tags September as 'Sept'; the whole
+    # pipeline (FISCAL_ORDER, month tables, JS) uses 'Sep'. Without this the
+    # current-month detector never matches September and stalls on August.
+    if 'Period1' in df.columns:
+        df['Period1'] = df['Period1'].replace({'Sept':'Sep'})
     # ── Standing rule: zero out HEA14532 (Pick N Pay Retail) — revenue & qty to 0 ──
     # Applied at load so it flows into every total, split, chart and the BI extract.
     _zero_mask = df['Customer'].astype(str).str.strip() == 'HEA14532'
@@ -447,25 +452,33 @@ def _pre_customers():
     be 'new'. Cached. Falls back to empty set if history files are absent."""
     global _PRE_CACHE
     if _PRE_CACHE is not None: return _PRE_CACHE
-    ids=set(); base=_WORK_DIR or "."
+    ids=set()
+    try:
+        _here=os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        _here=None
+    dirs=[d for d in (_here, _WORK_DIR, ".") if d]
     # (a) fast path: tiny precomputed baseline committed next to the generator
-    csvp=os.path.join(base, "prior_customers.csv")
-    if os.path.exists(csvp):
-        try:
-            cd=pd.read_csv(csvp, dtype=str)
-            ids |= set(cd[cd.columns[0]].dropna().astype(str).str.strip())
-            _PRE_CACHE=ids; return ids
-        except Exception:
-            pass
-    # (b) fallback: read the big static history files if they are present
+    for _d in dirs:
+        _c=os.path.join(_d, "prior_customers.csv")
+        if os.path.exists(_c):
+            try:
+                cd=pd.read_csv(_c, dtype=str)
+                ids |= set(cd[cd.columns[0]].dropna().astype(str).str.strip())
+                _PRE_CACHE=ids; return ids
+            except Exception:
+                pass
+    # (b) fallback: read the big static history files if present next to script/working file
     for h in HISTORY_FILES:
-        p=os.path.join(base, h["name"])
-        if not os.path.exists(p): continue
-        try:
-            hd=pd.read_excel(p, sheet_name=h["sheet"], header=h["header"], usecols=["Customer"])
-            ids |= set(hd["Customer"].dropna().astype(str).str.strip())
-        except Exception:
-            pass
+        for _d in dirs:
+            p=os.path.join(_d, h["name"])
+            if os.path.exists(p):
+                try:
+                    hd=pd.read_excel(p, sheet_name=h["sheet"], header=h["header"], usecols=["Customer"])
+                    ids |= set(hd["Customer"].dropna().astype(str).str.strip())
+                except Exception:
+                    pass
+                break
     _PRE_CACHE=ids
     return ids
 
@@ -532,7 +545,12 @@ def new_clients_html(region=None):
             f'<span style="color:#444">{x["loc"]}</span>'
             f'<span style="text-align:right;font-weight:700">{_r(x["spend"])}</span></div>'
             for i,x in enumerate(rows,1))
-        inner=hdr+body
+        _tot=sum(x['spend'] for x in rows)
+        totrow=('<div style="display:grid;grid-template-columns:28px 1fr 150px 110px;gap:8px;padding:7px 12px;'
+                'background:#DCE6F1;font-weight:700;font-size:11px">'
+                '<span></span><span>TOTAL — {} new clients</span><span></span>'.format(len(rows))+
+                f'<span style="text-align:right">{_r(_tot)}</span></div>')
+        inner=hdr+body+totrow
     else:
         inner='<div style="padding:10px;color:#888;font-size:10px">No new clients created in the prior month.</div>'
     return (f'<div class="section-hdr" style="margin-top:14px;background:#27500A">New Clients Created in {pm} — {scope} '
@@ -598,7 +616,7 @@ def build_html(d, report_date=None):
  
     # Remaining month targets from pre-computed dict (fast)
     def _rm(p1): return round(afs26[afs26['Region']==r][afs26['Period1']==p1]['Line Revenue'].sum()*1.19)
-    jul_tgt=_rm('Jul'); aug_tgt=_rm('Aug'); sep_tgt=_rm('Sept')
+    jul_tgt=_rm('Jul'); aug_tgt=_rm('Aug'); sep_tgt=_rm('Sep')
     oct_tgt=_rm('Oct'); nov_tgt=_rm('Nov'); dec_tgt=_rm('Dec')
     jan_tgt=_rm('Jan'); feb_tgt=_rm('Feb')
  
@@ -969,8 +987,6 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   {new_cl_rows if new_cl_rows else '<div style="padding:10px;color:#888;font-size:10px">No new clients</div>'}
 </div>
  
-{new_clients_html(r)}
- 
 <div class="section-hdr" style="margin-top:14px">Worst Performing Clients — {r}</div>
 <div style="margin:0 14px">
   <div style="display:grid;grid-template-columns:22px 1fr 70px 70px 70px 62px;gap:8px;align-items:center;padding:6px 12px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700;border-radius:4px 4px 0 0">
@@ -1028,6 +1044,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   {sp_region_rows}
 </div>
  
+{new_clients_html(r)}
 <div class="footer">HW24 {r} Sales Dashboard &bull; Confidential &bull; Generated {report_date} &bull; Data: {date_range} ({CM} {rwk_short}) &bull; Targets = AFS26 ×1.19</div>
 </div>
  
@@ -1377,7 +1394,7 @@ def generate_national(report_date=None, week_label="Week 2", days_elapsed=4):
  
     # Remaining monthly targets
     def rm(p): return round(mrev(r26,p)*UPLIFT)
-    jul_tgt=rm('Jul'); aug_tgt=rm('Aug'); sep_tgt=rm('Sept'); oct_tgt=rm('Oct')
+    jul_tgt=rm('Jul'); aug_tgt=rm('Aug'); sep_tgt=rm('Sep'); oct_tgt=rm('Oct')
     nov_tgt=rm('Nov'); dec_tgt=rm('Dec'); jan_tgt=rm('Jan'); feb_tgt=rm('Feb')
  
     # ── Units ──────────────────────────────────────────────────────────────────
@@ -1924,8 +1941,6 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   {new_rows}
 </div>
  
-{new_clients_html(None)}
- 
 <!-- Worst clients -->
 <div class="section-hdr" style="margin-top:14px">Worst Performing Clients — AFS26 vs AFS27</div>
 <div style="margin:0 14px">
@@ -1974,6 +1989,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
   {sp_rows(bot_sp, max_=5)}
 </div>
  
+{new_clients_html(None)}
 <div class="footer">HW24 Group Sales National Dashboard &bull; Confidential &bull; Generated {report_date} &bull; Targets = AFS26 ×1.19 &bull; {week_label} ({days_elapsed} days elapsed, {wd_el}/{wd_tot} MTD working days)</div>
 </div>
  
