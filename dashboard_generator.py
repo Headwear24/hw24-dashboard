@@ -568,12 +568,26 @@ def new_clients_html(region=None):
 # Format-robust: handles .xlsx and .xlsb; Excel serial dates auto-converted.
 # ============================================================================
 def _excel_dates(sr):
-    """Return a datetime series whether the source gave real dates (xlsx) or
-    Excel serial numbers (xlsb)."""
+    """Return a datetime series whatever the source gave: real datetimes
+    (xlsx / date-formatted xlsb cells), Excel serial numbers (General-formatted
+    xlsb cells), or date strings. Must NOT treat an already-datetime column as
+    serials: pd.to_numeric() on datetimes yields nanosecond ints that would be
+    mis-read as serials and overflow to NaT, dumping every pipeline line into
+    'Later'. A date-formatted Req Del Dt against a serial Inv Dt is exactly
+    that case."""
+    import datetime as _d
+    if pd.api.types.is_datetime64_any_dtype(sr):
+        return pd.to_datetime(sr, errors='coerce')
+    nn = sr.dropna()
+    if len(nn) and isinstance(nn.iloc[0], (_d.date, _d.datetime, pd.Timestamp)):
+        return pd.to_datetime(sr, errors='coerce')
     num = pd.to_numeric(sr, errors='coerce')
-    if num.notna().mean() > 0.5:
-        return pd.to_datetime(num, unit='D', origin='1899-12-30', errors='coerce')
-    return pd.to_datetime(sr, errors='coerce')
+    nn_mask = sr.notna()
+    good = num.notna() & num.between(1, 100000)   # plausible Excel serial range
+    if nn_mask.any() and float(good[nn_mask].mean()) > 0.5:
+        return pd.to_datetime(num.where(num.between(1, 100000)),
+                              unit='D', origin='1899-12-30', errors='coerce')
+    return pd.to_datetime(sr, errors='coerce', dayfirst=True)
 
 PIPE = None
 PIPE_LABELS = []
