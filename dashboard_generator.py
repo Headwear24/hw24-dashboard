@@ -170,7 +170,9 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     WD_PER = wd_per
     global _WORK_DIR
     _WORK_DIR = os.path.dirname(os.path.abspath(filepath))
-    df = pd.read_excel(filepath, sheet_name='AFS 26 Data', header=0)
+    _eng = 'pyxlsb' if str(filepath).lower().endswith('.xlsb') else None
+    df = pd.read_excel(filepath, sheet_name='AFS 26 Data', header=0, engine=_eng)
+    df['Inv Dt'] = _excel_dates(df['Inv Dt'])
     # Normalise month label: the source tags September as 'Sept'; the whole
     # pipeline (FISCAL_ORDER, month tables, JS) uses 'Sep'. Without this the
     # current-month detector never matches September and stalls on August.
@@ -216,6 +218,10 @@ def initialise(filepath, wd_per=9/20, w2_fraction=4/5):
     global TOTAL_WEEKS, REPORT_DATE, REPORT_YEAR, MONTH_COMPLETE
     # --- Report date & large-order windows from the latest invoice date ---
     today_dt = pd.to_datetime(afs27['Inv Dt'], errors='coerce').max()
+    try:
+        load_pipeline(filepath, today_dt if pd.notna(today_dt) else __import__('datetime').date.today())
+    except Exception:
+        pass
     # Total weeks in the current accounting month (4 or 5) — from the calendar rule
     # (validated against the 2026/27 accounting schedule; no data dependency).
     if pd.notna(today_dt):
@@ -556,6 +562,126 @@ def new_clients_html(region=None):
     return (f'<div class="section-hdr" style="margin-top:14px;background:#27500A">New Clients Created in {pm} — {scope} '
             f'&nbsp;<span style="font-size:10px;font-weight:400;opacity:.85">first-week snapshot &bull; {len(rows)} new &bull; spend to date</span></div>'
             f'<div style="margin:0 14px">{inner}</div>')
+
+# ============================================================================
+# CONFIRMED ORDER PIPELINE  (reads the "CO's" tab from the same working file)
+# Format-robust: handles .xlsx and .xlsb; Excel serial dates auto-converted.
+# ============================================================================
+def _excel_dates(sr):
+    """Return a datetime series whether the source gave real dates (xlsx) or
+    Excel serial numbers (xlsb)."""
+    num = pd.to_numeric(sr, errors='coerce')
+    if num.notna().mean() > 0.5:
+        return pd.to_datetime(num, unit='D', origin='1899-12-30', errors='coerce')
+    return pd.to_datetime(sr, errors='coerce')
+
+PIPE = None
+PIPE_LABELS = []
+
+def load_pipeline(filepath, ref_date):
+    """Load open confirmed orders from the 'CO's' tab, value at outstanding
+    amount (ordered - invoiced), bucket by Req Del Dt relative to ref_date."""
+    global PIPE, PIPE_LABELS
+    import datetime as _dt
+    PIPE = None; PIPE_LABELS = []
+    try:
+        eng = 'pyxlsb' if str(filepath).lower().endswith('.xlsb') else None
+        raw = pd.read_excel(filepath, sheet_name="CO's", header=None, engine=eng)
+    except Exception:
+        return
+    hdr = None
+    for i in range(min(15, len(raw))):
+        if any(str(x).strip() == 'CO no' for x in raw.iloc[i].tolist()):
+            hdr = i; break
+    if hdr is None:
+        return
+    P = pd.read_excel(filepath, sheet_name="CO's", header=hdr, engine=eng).dropna(how='all')
+    if 'Req Del Dt' not in P.columns:
+        return
+    P['req'] = _excel_dates(P['Req Del Dt'])
+    for c in ['Nt pr', 'CO Ord Qty', 'Inv Qty']:
+        P[c] = pd.to_numeric(P.get(c, 0), errors='coerce').fillna(0)
+    P['os_val'] = (P['Nt pr'] * (P['CO Ord Qty'] - P['Inv Qty']).clip(lower=0)).clip(lower=0)
+    P = P[P['os_val'] > 0].copy()
+    P['Region'] = P['Province Orginal'].astype(str).str.strip().map(REGION_MAP).fillna('Other')
+    P['cust_name'] = P['Customer.1'] if 'Customer.1' in P.columns else P.get('Cust Name', '')
+    rd = ref_date.date() if hasattr(ref_date, 'date') else ref_date
+    cm = _dt.date(rd.year, rd.month, 1)
+    def _am(d, n):
+        y = d.year + (d.month - 1 + n) // 12
+        return _dt.date(y, (d.month - 1 + n) % 12 + 1, 1)
+    edges = [cm, _am(cm, 1), _am(cm, 2), _am(cm, 3), _am(cm, 4)]
+    PIPE_LABELS = ["Due", cm.strftime("%b %Y"), _am(cm, 1).strftime("%b %Y"),
+                   _am(cm, 2).strftime("%b %Y"), _am(cm, 3).strftime("%b %Y"), "Later"]
+    def _bk(d):
+        if pd.isna(d): return 5
+        dd = d.date()
+        if dd < edges[0]: return 0
+        for i in range(4):
+            if dd < edges[i + 1]: return i + 1
+        return 5
+    P['bk'] = P['req'].apply(_bk)
+    PIPE = P
+
+def _pR(v):
+    v = float(v)
+    return f"R{v/1e6:.2f}M" if abs(v) >= 1e6 else f"R{v/1e3:.0f}K"
+
+def pipeline_national_html():
+    if PIPE is None or len(PIPE) == 0: return ''
+    regs = ['Gauteng', 'KZN', 'Western Cape', 'Eastern Cape', 'International']
+    L = PIPE_LABELS
+    gx = PIPE.groupby(['Region', 'bk'])['os_val'].sum()
+    head = ('<div style="display:grid;grid-template-columns:1.4fr repeat(7,1fr);background:#2E75B6;color:#fff;'
+            'font-size:10px;font-weight:700;padding:7px 10px"><span>Region</span>'
+            + ''.join(f'<span style="text-align:right">{x}</span>' for x in L)
+            + '<span style="text-align:right">Total</span></div>')
+    body = ''; coltot = [0.0]*6; gtot = 0.0
+    for ri, reg in enumerate(regs):
+        vals = [float(gx.get((reg, i), 0.0)) for i in range(6)]; rt = sum(vals)
+        for i in range(6): coltot[i] += vals[i]
+        gtot += rt
+        bg = '#fff' if ri % 2 == 0 else '#f9f9f9'
+        body += (f'<div style="display:grid;grid-template-columns:1.4fr repeat(7,1fr);padding:6px 10px;font-size:11px;'
+                 f'background:{bg};border-bottom:1px solid #f0f0f0"><span style="font-weight:600">{reg}</span>'
+                 + ''.join(f'<span style="text-align:right">{_pR(v)}</span>' for v in vals)
+                 + f'<span style="text-align:right;font-weight:700">{_pR(rt)}</span></div>')
+    tot = ('<div style="display:grid;grid-template-columns:1.4fr repeat(7,1fr);padding:7px 10px;font-size:11px;'
+           'font-weight:700;background:#DCE6F1"><span>TOTAL</span>'
+           + ''.join(f'<span style="text-align:right">{_pR(v)}</span>' for v in coltot)
+           + f'<span style="text-align:right">{_pR(gtot)}</span></div>')
+    return ('<div class="section-hdr" style="margin-top:14px;background:#27500A">Confirmed Order Pipeline &mdash; Open Orders by Required Delivery Date'
+            f' &nbsp;<span style="font-size:10px;font-weight:400;opacity:.85">outstanding value &bull; {_pR(gtot)} total &bull; excl. nil-value lines</span></div>'
+            f'<div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden">{head}{body}{tot}</div>')
+
+def pipeline_region_html(region):
+    if PIPE is None or len(PIPE) == 0: return ''
+    g = PIPE[PIPE['Region'] == region]; L = PIPE_LABELS
+    buckets = [float(g[g['bk'] == i]['os_val'].sum()) for i in range(6)]; total = float(g['os_val'].sum())
+    cards = ''
+    for i, lab in enumerate(L):
+        bg = '#fdeaea' if (i == 0 and buckets[i] > 0) else '#fff'
+        cards += (f'<div style="border:1px solid #e0e0e0;border-radius:8px;padding:10px;text-align:center;background:{bg}">'
+                  f'<div style="font-size:10px;color:#666;font-weight:700">{lab}</div>'
+                  f'<div style="font-size:15px;font-weight:700;margin-top:3px">{_pR(buckets[i])}</div></div>')
+    cards += (f'<div style="border:1px solid #27500A;border-radius:8px;padding:10px;text-align:center;background:#27500A;color:#fff">'
+              f'<div style="font-size:10px;font-weight:700">Total open</div>'
+              f'<div style="font-size:15px;font-weight:700;margin-top:3px">{_pR(total)}</div></div>')
+    tc = g.groupby(['Customer', 'cust_name'])['os_val'].sum().sort_values(ascending=False).head(10)
+    rows = ''
+    for (cid, nm), v in tc.items():
+        rows += (f'<div style="display:grid;grid-template-columns:1fr 90px;padding:5px 10px;border-bottom:1px solid #f0f0f0;'
+                 f'font-size:11px"><span>{nm}</span><span style="text-align:right;font-weight:700">{_pR(v)}</span></div>')
+    if not rows:
+        rows = '<div style="padding:10px;color:#888;font-size:10px">No open orders for this region.</div>'
+    return ('<div class="section-hdr" style="margin-top:14px;background:#27500A">Confirmed Order Pipeline &mdash; ' + region
+            + f' &nbsp;<span style="font-size:10px;font-weight:400;opacity:.85">by required delivery date &bull; {_pR(total)} open</span></div>'
+            f'<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin:8px 14px 0">{cards}</div>'
+            f'<div style="margin:8px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden">'
+            '<div style="display:grid;grid-template-columns:1fr 90px;padding:6px 10px;background:#2E75B6;color:#fff;font-size:10px;font-weight:700">'
+            '<span>Top open-order customers</span><span style="text-align:right">Open value</span></div>'
+            f'{rows}</div>')
+
 
 def build_html(d, report_date=None):
     import datetime
@@ -1045,6 +1171,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 </div>
  
 {new_clients_html(r)}
+{pipeline_region_html(r)}
 <div class="footer">HW24 {r} Sales Dashboard &bull; Confidential &bull; Generated {report_date} &bull; Data: {date_range} ({CM} {rwk_short}) &bull; Targets = AFS26 ×1.19</div>
 </div>
  
@@ -1990,6 +2117,7 @@ body{{font-family:'Segoe UI',Calibri,Arial,sans-serif;background:#f4f5f7;color:#
 </div>
  
 {new_clients_html(None)}
+{pipeline_national_html()}
 <div class="footer">HW24 Group Sales National Dashboard &bull; Confidential &bull; Generated {report_date} &bull; Targets = AFS26 ×1.19 &bull; {week_label} ({days_elapsed} days elapsed, {wd_el}/{wd_tot} MTD working days)</div>
 </div>
  
