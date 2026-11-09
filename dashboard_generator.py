@@ -593,7 +593,7 @@ PIPE = None
 PIPE_LABELS = []
 
 def load_pipeline(filepath, ref_date):
-    """Load open confirmed orders from the 'CO's' tab, value at outstanding
+    """Load open confirmed orders from the 'CO's' tab, value at outstanding (still to come)
     amount (ordered - invoiced), bucket by Req Del Dt relative to ref_date."""
     global PIPE, PIPE_LABELS
     import datetime as _dt
@@ -613,10 +613,15 @@ def load_pipeline(filepath, ref_date):
     if 'Req Del Dt' not in P.columns:
         return
     P['req'] = _excel_dates(P['Req Del Dt'])
+    # Pipeline shows VALUE STILL TO COME ONLY: outstanding = Nt pr x (CO Ord Qty - Inv Qty).
+    # Also drop any line the user has zeroed at source (Line amt / col U == 0) - e.g.
+    # stale 2023-2025 required-delivery orders that will not deliver - so the pipeline
+    # reflects the user's source-level cleaning rather than silently re-including them.
     for c in ['Nt pr', 'CO Ord Qty', 'Inv Qty']:
         P[c] = pd.to_numeric(P.get(c, 0), errors='coerce').fillna(0)
     P['os_val'] = (P['Nt pr'] * (P['CO Ord Qty'] - P['Inv Qty']).clip(lower=0)).clip(lower=0)
-    P = P[P['os_val'] > 0].copy()
+    P['_src'] = pd.to_numeric(P.get('Line amt', 0), errors='coerce').fillna(0)
+    P = P[(P['os_val'] > 0) & (P['_src'] != 0)].copy()
     P['Region'] = P['Province Orginal'].astype(str).str.strip().map(REGION_MAP).fillna('Other')
     P['cust_name'] = P['Customer.1'] if 'Customer.1' in P.columns else P.get('Cust Name', '')
     rd = ref_date.date() if hasattr(ref_date, 'date') else ref_date
@@ -665,7 +670,7 @@ def pipeline_national_html():
            + ''.join(f'<span style="text-align:right">{_pR(v)}</span>' for v in coltot)
            + f'<span style="text-align:right">{_pR(gtot)}</span></div>')
     return ('<div class="section-hdr" style="margin-top:14px;background:#27500A">Confirmed Order Pipeline &mdash; Open Orders by Required Delivery Date'
-            f' &nbsp;<span style="font-size:10px;font-weight:400;opacity:.85">outstanding value &bull; {_pR(gtot)} total &bull; excl. nil-value lines</span></div>'
+            f' &nbsp;<span style="font-size:10px;font-weight:400;opacity:.85">value still to come (outstanding) &bull; {_pR(gtot)} total &bull; excl. nil &amp; zeroed lines</span></div>'
             f'<div style="margin:6px 14px 0;border:1px solid #e0e0e0;border-radius:6px;overflow:hidden">{head}{body}{tot}</div>')
 
 def pipeline_region_html(region):
