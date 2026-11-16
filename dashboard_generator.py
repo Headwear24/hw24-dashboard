@@ -621,7 +621,13 @@ def load_pipeline(filepath, ref_date):
         P[c] = pd.to_numeric(P.get(c, 0), errors='coerce').fillna(0)
     P['os_val'] = (P['Nt pr'] * (P['CO Ord Qty'] - P['Inv Qty']).clip(lower=0)).clip(lower=0)
     P['_src'] = pd.to_numeric(P.get('Line amt', 0), errors='coerce').fillna(0)
-    P = P[(P['os_val'] > 0) & (P['_src'] != 0)].copy()
+    # Exclude Pick N Pay (HEA14532) from the pipeline, per the same standing rule
+    # that zeroes it in the sales data. Its open COs are not counted anywhere.
+    _cust = P['Customer'].astype(str).str.strip() if 'Customer' in P.columns else ''
+    # Exclude stale pre-2026 required-delivery orders so the pipeline is 'still to
+    # come' only and stays aligned with the customer review. Undated lines are kept.
+    _old = P['req'].notna() & (P['req'].dt.year < 2026)
+    P = P[(P['os_val'] > 0) & (P['_src'] != 0) & (_cust != 'HEA14532') & (~_old)].copy()
     P['Region'] = P['Province Orginal'].astype(str).str.strip().map(REGION_MAP).fillna('Other')
     P['cust_name'] = P['Customer.1'] if 'Customer.1' in P.columns else P.get('Cust Name', '')
     rd = ref_date.date() if hasattr(ref_date, 'date') else ref_date
